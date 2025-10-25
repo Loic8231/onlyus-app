@@ -26,6 +26,20 @@ type NearbyRow = {
   distance_km?: number | null;
 };
 
+type RawProfile = {
+  id: string;
+  first_name: string | null;
+  birthdate: string | null;
+  city: string | null;
+  bio: string | null;
+  interests: string[] | null;
+  photo_url: string | null;
+  lat: number | null;
+  lng: number | null;
+  city_lat: number | null;
+  city_lng: number | null;
+};
+
 type CardProfile = {
   id: string;
   name: string;
@@ -34,6 +48,7 @@ type CardProfile = {
   bio: string;
   interests: string[];
   photoUrl?: string | null;
+  distance_km?: number | null;
 };
 
 function ageFromBirthdate(d?: string | null) {
@@ -44,6 +59,18 @@ function ageFromBirthdate(d?: string | null) {
   const m = t.getMonth() - b.getMonth();
   if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
   return a;
+}
+
+// Haversine (km)
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 export default function Discover() {
@@ -67,6 +94,7 @@ export default function Discover() {
         return;
       }
 
+      // 1) Lecture de MES coord et rayon
       const { data: me } = await supabase
         .from("profiles")
         .select("photo_url, lat, lng, city_lat, city_lng, preferred_distance_km")
@@ -75,41 +103,97 @@ export default function Discover() {
 
       if (me?.photo_url) setUserPhoto(me.photo_url || "");
 
-      const lat = (me as any)?.lat ?? (me as any)?.city_lat ?? null;
-      const lon = (me as any)?.lng ?? (me as any)?.city_lng ?? null;
-      const radius = (me as any)?.preferred_distance_km ?? 50;
+      // radius : profile_preferences.distance_km > profiles.preferred_distance_km > 50
+      const { data: pref } = await supabase
+        .from("profile_preferences")
+        .select("distance_km")
+        .eq("user_id", userId)
+        .maybeSingle();
 
-      if (lat == null || lon == null) {
+      const myLat =
+        (me as any)?.lat ?? (me as any)?.city_lat ?? null;
+      const myLon =
+        (me as any)?.lng ?? (me as any)?.city_lng ?? null;
+      const radius =
+        (pref as any)?.distance_km ??
+        (me as any)?.preferred_distance_km ??
+        50;
+
+      if (myLat == null || myLon == null) {
         setItems([]);
         setLoading(false);
         return;
       }
 
-      const { data, error } = await supabase.rpc("find_nearby_profiles", {
-        p_user_id: userId,
-        p_lat: lat,
-        p_lon: lon,
-        p_radius_km: radius,
-        p_limit: 30,
-      });
+      // 2) Tentative RPC (si dispo)
+      let mapped: CardProfile[] | null = null;
+      try {
+        const { data, error } = await supabase.rpc("find_nearby_profiles", {
+          p_user_id: userId,
+          p_lat: myLat,
+          p_lon: myLon,
+          p_radius_km: radius,
+          p_limit: 30,
+        });
 
-      if (error) {
-        console.warn("find_nearby_profiles RPC error:", error.message);
-        setItems([]);
-        setLoading(false);
-        return;
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const rows = (data as NearbyRow[]) || [];
+          mapped = rows.map((r) => ({
+            id: r.id,
+            name: r.first_name ?? "—",
+            age: ageFromBirthdate(r.birthdate),
+            city: r.city ?? "—",
+            bio: r.bio ?? "",
+            interests: r.interests ?? [],
+            photoUrl: r.photo_url ?? null,
+            distance_km: r.distance_km ?? null,
+          }));
+        }
+      } catch {
+        // ignore RPC errors, we will fallback
       }
 
-      const rows = (data as NearbyRow[]) || [];
-      const mapped: CardProfile[] = rows.map((r) => ({
-        id: r.id,
-        name: r.first_name ?? "—",
-        age: ageFromBirthdate(r.birthdate),
-        city: r.city ?? "—",
-        bio: r.bio ?? "",
-        interests: r.interests ?? [],
-        photoUrl: r.photo_url ?? null,
-      }));
+      // 3) Fallback sans RPC : select + filtre JS par distance
+      if (!mapped) {
+        const { data: raw, error: selErr } = await supabase
+          .from("profiles")
+          .select(
+            "id, first_name, birthdate, city, bio, interests, photo_url, lat, lng, city_lat, city_lng"
+          )
+          .neq("id", userId) // pas moi
+          .not("photo_url", "is", null) // un minimum pour la carte
+          .limit(200);
+
+        if (selErr || !raw) {
+          setItems([]);
+          setLoading(false);
+          return;
+        }
+
+        const filtered = (raw as RawProfile[])
+          .map((p) => {
+            const plat = p.lat ?? p.city_lat ?? null;
+            const plon = p.lng ?? p.city_lng ?? null;
+            if (plat == null || plon == null) return null;
+            const d = haversineKm(myLat, myLon, plat, plon);
+            return { p, d };
+          })
+          .filter(Boolean)
+          .filter((x) => (x as any).d <= radius)
+          .sort((a: any, b: any) => a.d - b.d)
+          .slice(0, 30);
+
+        mapped = filtered.map(({ p, d }: any) => ({
+          id: p.id,
+          name: p.first_name ?? "—",
+          age: ageFromBirthdate(p.birthdate),
+          city: p.city ?? "—",
+          bio: p.bio ?? "",
+          interests: p.interests ?? [],
+          photoUrl: p.photo_url ?? null,
+          distance_km: d,
+        }));
+      }
 
       setItems(mapped);
       setLoading(false);
@@ -130,7 +214,7 @@ export default function Discover() {
 
     await supabase.from("passes").insert([{ user_id: userId, target_id: profile.id }]);
     setShowInfo(false);
-    setItems((prev) => prev.filter((p) => p.id !== profile.id)); // Retire le profil du flux
+    setItems((prev) => prev.filter((p) => p.id !== profile.id));
   };
 
   // ❤️ Liker un profil
@@ -150,11 +234,10 @@ export default function Discover() {
       return;
     }
 
-    // Si match trouvé → redirige vers l’écran Match
     if (data?.[0]?.matched) {
       navigate("/match", { state: { matchId: data[0].match_id } });
     } else {
-      setItems((prev) => prev.filter((p) => p.id !== profile.id)); // Retire le profil
+      setItems((prev) => prev.filter((p) => p.id !== profile.id));
     }
 
     setShowInfo(false);
@@ -230,6 +313,11 @@ export default function Discover() {
                         </span>
                       ))}
                     </div>
+                    {typeof profile?.distance_km === "number" && (
+                      <div style={{ marginTop: 8, opacity: 0.85 }}>
+                        ~{profile.distance_km.toFixed(1)} km
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -407,4 +495,5 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
+
 
