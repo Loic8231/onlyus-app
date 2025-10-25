@@ -18,7 +18,8 @@ export default function CreateProfile() {
   const [city, setCity] = useState("");
   // ▲▲
 
-  const [gender, setGender] = useState<"" | "homme" | "femme" | "non-binaire" | "ne-pas-dire" | "autre">("");
+  const [gender, setGender] =
+    useState<"" | "homme" | "femme" | "non-binaire" | "ne-pas-dire" | "autre">("");
   const [customGender, setCustomGender] = useState("");
   const [genderOpen, setGenderOpen] = useState(false);
   const genderWrapRef = useRef<HTMLDivElement | null>(null);
@@ -42,7 +43,8 @@ export default function CreateProfile() {
   const firstNameValid = firstName.trim().length >= 2;
   const ageValid = age !== null && age >= 18 && age < 100;
   const photoValid = !!photoUrl || !!file;
-  const genderValid = (gender && gender !== "autre") || (gender === "autre" && customGender.trim().length > 0);
+  const genderValid =
+    (gender && gender !== "autre") || (gender === "autre" && customGender.trim().length > 0);
   const cityValid = city.trim().length >= 2;
 
   const canSubmit = firstNameValid && ageValid && photoValid && genderValid && cityValid && !saving;
@@ -67,10 +69,9 @@ export default function CreateProfile() {
     const ext = file.name.split(".").pop() || "jpg";
     const path = `${userId}/${Date.now()}.${ext}`;
 
-    const { error: upErr } = await supabase.storage.from("avatars").upload(path, file, {
-      cacheControl: "3600",
-      upsert: true,
-    });
+    const { error: upErr } = await supabase.storage
+      .from("avatars")
+      .upload(path, file, { cacheControl: "3600", upsert: true });
     if (upErr) {
       console.error("upload error:", upErr);
       setError("Échec de l’upload de la photo (tu peux réessayer plus tard).");
@@ -81,21 +82,48 @@ export default function CreateProfile() {
     return data.publicUrl ?? null;
   }
 
-  // Géocodage (RPC si dispo)
-  async function geocodeCitySafe(cityName: string): Promise<{ lat?: number; lon?: number } | null> {
+  /**
+   * Géocodage robuste :
+   * 1) essaie la RPC Postgres "geocode_city" (si tu l’as créée côté Supabase),
+   * 2) sinon fallback sur Nominatim (OpenStreetMap) côté client.
+   */
+  async function geocodeCity(cityName: string): Promise<{ lat?: number; lon?: number } | null> {
     const input = cityName.trim();
     if (!input) return null;
+
+    // --- Tentative via RPC
     try {
       const { data, error } = await supabase.rpc("geocode_city", { city_input: input });
-      if (error) {
-        console.warn("geocode_city RPC error:", error.message);
-        return null;
+      if (!error && data && typeof data.lat === "number" && typeof data.lon === "number") {
+        return { lat: data.lat, lon: data.lon };
       }
-      return (data as any) ?? null;
+      if (error) console.warn("geocode_city RPC error:", error.message);
     } catch (e) {
-      console.warn("geocode_city RPC not available yet:", e);
-      return null;
+      console.warn("geocode_city RPC not available:", e);
     }
+
+    // --- Fallback Nominatim
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+        input
+      )}&limit=1&addressdetails=0`;
+      const res = await fetch(url, {
+        // Nominatim recommande d’identifier l’app ; en front on ne peut pas
+        // changer l’en-tête User-Agent, mais on garde une requête propre.
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return null;
+      const json = (await res.json()) as Array<{ lat: string; lon: string }>;
+      if (!json?.length) return null;
+      const first = json[0];
+      const lat = parseFloat(first.lat);
+      const lon = parseFloat(first.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    } catch (e) {
+      console.warn("Nominatim fallback error:", e);
+    }
+
+    return null;
   }
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -120,10 +148,10 @@ export default function CreateProfile() {
     const uploaded = await uploadAvatarIfNeeded(userId);
     if (uploaded) finalPhotoUrl = uploaded;
 
-    // Géocodage ville (si RPC installé)
-    const geo = await geocodeCitySafe(city);
+    // Géocodage ville (RPC puis fallback Nominatim)
+    const geo = await geocodeCity(city);
 
-    // Enregistre/Met à jour le profil
+    // Enregistre / met à jour le profil
     const payload: any = {
       id: userId,
       first_name: firstName.trim(),
@@ -140,12 +168,33 @@ export default function CreateProfile() {
     }
 
     const { error: dbErr } = await supabase.from("profiles").upsert(payload, { onConflict: "id" });
-
     if (dbErr) {
       console.error(dbErr);
       setError("Impossible d’enregistrer le profil pour le moment.");
       setSaving(false);
       return;
+    }
+
+    // (Optionnel) initialise les préférences de position pour Discover
+    // On ignore silencieusement si la table/colonnes n’existent pas.
+    if (geo?.lat != null && geo?.lon != null) {
+      try {
+        await supabase
+          .from("profile_preferences")
+          .upsert(
+            {
+              user_id: userId,
+              home_lat: geo.lat,
+              home_lng: geo.lon,
+              // un défaut raisonnable (modifiable ensuite dans Preferences)
+              distance_km: 50,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" }
+          );
+      } catch (e) {
+        console.warn("profile_preferences upsert skipped:", e);
+      }
     }
 
     setSaving(false);
@@ -178,7 +227,9 @@ export default function CreateProfile() {
       <Card style={styles.cardInner}>
         <div style={styles.header}>
           <HeartsLogo />
-          <h2 className="h2" style={styles.title}>Crée ton profil</h2>
+          <h2 className="h2" style={styles.title}>
+            Crée ton profil
+          </h2>
         </div>
 
         <form onSubmit={onSubmit} style={styles.form}>
@@ -219,11 +270,7 @@ export default function CreateProfile() {
               style={{
                 ...styles.input,
                 borderColor:
-                  city.length === 0
-                    ? COLORS.border
-                    : cityValid
-                    ? "rgba(73,218,131,0.7)"
-                    : "rgba(255,107,107,0.7)",
+                  city.length === 0 ? COLORS.border : cityValid ? "rgba(73,218,131,0.7)" : "rgba(255,107,107,0.7)",
               }}
               autoComplete="address-level2"
               disabled={saving}
@@ -236,7 +283,7 @@ export default function CreateProfile() {
             <div style={styles.genderSelectWrap} ref={genderWrapRef}>
               <button
                 type="button"
-                onClick={() => setGenderOpen(v => !v)}
+                onClick={() => setGenderOpen((v) => !v)}
                 aria-haspopup="listbox"
                 aria-expanded={genderOpen}
                 style={{
@@ -260,22 +307,28 @@ export default function CreateProfile() {
 
               {genderOpen && (
                 <div role="listbox" style={styles.genderMenu}>
-                  {["homme","femme","non-binaire","ne-pas-dire"].map(opt => (
+                  {["homme", "femme", "non-binaire", "ne-pas-dire"].map((opt) => (
                     <button
                       key={opt}
                       type="button"
                       role="option"
                       aria-selected={gender === (opt as any)}
-                      onClick={() => { setGender(opt as any); setGenderOpen(false); }}
+                      onClick={() => {
+                        setGender(opt as any);
+                        setGenderOpen(false);
+                      }}
                       style={{
                         ...styles.genderOption,
                         ...(gender === (opt as any) ? styles.genderOptionActive : {}),
                       }}
                     >
-                      {opt === "homme" ? "Homme" :
-                       opt === "femme" ? "Femme" :
-                       opt === "non-binaire" ? "Non-binaire" :
-                       "Je préfère ne pas dire"}
+                      {opt === "homme"
+                        ? "Homme"
+                        : opt === "femme"
+                        ? "Femme"
+                        : opt === "non-binaire"
+                        ? "Non-binaire"
+                        : "Je préfère ne pas dire"}
                     </button>
                   ))}
 
@@ -283,7 +336,10 @@ export default function CreateProfile() {
                     <input
                       type="text"
                       value={customGender}
-                      onChange={(e) => { setCustomGender(e.target.value); if (gender !== "autre") setGender("autre"); }}
+                      onChange={(e) => {
+                        setCustomGender(e.target.value);
+                        if (gender !== "autre") setGender("autre");
+                      }}
                       placeholder="Autre (préciser)"
                       style={styles.genderCustomInput}
                       disabled={saving}
@@ -312,7 +368,8 @@ export default function CreateProfile() {
               placeholder="ex. Loïc"
               style={{
                 ...styles.input,
-                borderColor: firstName.length === 0 ? COLORS.border : firstNameValid ? "rgba(73,218,131,0.7)" : "rgba(255,107,107,0.7)",
+                borderColor:
+                  firstName.length === 0 ? COLORS.border : firstNameValid ? "rgba(73,218,131,0.7)" : "rgba(255,107,107,0.7)",
               }}
               autoComplete="given-name"
               disabled={saving}
@@ -354,8 +411,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     placeItems: "center",
     padding: 16,
-    fontFamily:
-      "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    fontFamily: "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     color: COLORS.white,
   },
   cardInner: { width: "100%", maxWidth: 520, borderRadius: 28, padding: "28px 22px 22px" },
@@ -363,11 +419,45 @@ const styles: Record<string, React.CSSProperties> = {
   title: { margin: "2px 0 10px", fontWeight: 800, opacity: 0.95 },
   form: { display: "flex", flexDirection: "column", gap: 16, marginTop: 8 },
   photoRow: { display: "grid", placeItems: "center", gap: 8 },
-  photoFrame: { width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `2px solid ${COLORS.border}`, display: "grid", placeItems: "center", overflow: "hidden" },
+  photoFrame: {
+    width: 120,
+    height: 120,
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.08)",
+    border: `2px solid ${COLORS.border}`,
+    display: "grid",
+    placeItems: "center",
+    overflow: "hidden",
+  },
   photoImg: { width: "100%", height: "100%", objectFit: "cover" },
-  photoBtn: { display: "block", margin: "16px auto 0", border: "none", background: COLORS.coral, color: COLORS.white, borderRadius: 20, padding: "10px 14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 10px 22px rgba(255,107,107,0.28)" },
+  photoBtn: {
+    display: "block",
+    margin: "16px auto 0",
+    border: "none",
+    background: COLORS.coral,
+    color: COLORS.white,
+    borderRadius: 20,
+    padding: "10px 14px",
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 10px 22px rgba(255,107,107,0.28)",
+  },
   genderSelectWrap: { position: "relative" },
-  genderToggle: { width: "100%", padding: "14px 14px", borderRadius: 14, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.text, outline: "none", fontSize: 16, fontWeight: 800, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" },
+  genderToggle: {
+    width: "100%",
+    padding: "14px 14px",
+    borderRadius: 14,
+    border: `2px solid ${COLORS.border}`,
+    background: "rgba(255,255,255,0.08)",
+    color: COLORS.text,
+    outline: "none",
+    fontSize: 16,
+    fontWeight: 800,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    cursor: "pointer",
+  },
   genderMenu: {
     position: "absolute",
     zIndex: 10,
@@ -383,12 +473,55 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     gap: 6,
   },
-  genderOption: { textAlign: "left", padding: "12px 14px", borderRadius: 12, border: "1px solid transparent", background: "transparent", color: COLORS.white, cursor: "pointer", fontWeight: 700 },
+  genderOption: {
+    textAlign: "left",
+    padding: "12px 14px",
+    borderRadius: 12,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: COLORS.white,
+    cursor: "pointer",
+    fontWeight: 700,
+  },
   genderOptionActive: { background: "rgba(255,107,107,0.15)", borderColor: "rgba(255,107,107,0.35)" },
-  genderCustomRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, paddingTop: 4, borderTop: `1px dashed ${COLORS.border}`, marginTop: 4 },
-  genderCustomInput: { padding: "12px 12px", borderRadius: 12, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.white, outline: "none", fontSize: 15 },
-  genderSaveBtn: { padding: "12px 14px", borderRadius: 12, border: `2px solid ${COLORS.border}`, background: COLORS.coral, color: COLORS.white, fontWeight: 800, cursor: "pointer", opacity: 1 },
+  genderCustomRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: 8,
+    paddingTop: 4,
+    borderTop: `1px dashed ${COLORS.border}`,
+    marginTop: 4,
+  },
+  genderCustomInput: {
+    padding: "12px 12px",
+    borderRadius: 12,
+    border: `2px solid ${COLORS.border}`,
+    background: "rgba(255,255,255,0.08)",
+    color: COLORS.white,
+    outline: "none",
+    fontSize: 15,
+  },
+  genderSaveBtn: {
+    padding: "12px 14px",
+    borderRadius: 12,
+    border: `2px solid ${COLORS.border}`,
+    background: COLORS.coral,
+    color: COLORS.white,
+    fontWeight: 800,
+    cursor: "pointer",
+    opacity: 1,
+  },
   label: { display: "flex", flexDirection: "column", gap: 8, fontSize: 14, opacity: 0.95 },
-  input: { width: "100%", padding: "14px 14px", borderRadius: 14, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.text, outline: "none", fontSize: 16, caretColor: COLORS.white },
+  input: {
+    width: "100%",
+    padding: "14px 14px",
+    borderRadius: 14,
+    border: `2px solid ${COLORS.border}`,
+    background: "rgba(255,255,255,0.08)",
+    color: COLORS.text,
+    outline: "none",
+    fontSize: 16,
+    caretColor: COLORS.white,
+  },
   error: { color: "#FFD2D2", fontSize: 13, marginTop: -6 },
 };
