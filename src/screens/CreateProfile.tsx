@@ -14,9 +14,9 @@ export default function CreateProfile() {
   const [firstName, setFirstName] = useState("");
   const [birth, setBirth] = useState("");
 
-  // ▼▼ Ville
+  // ▼ Ville
   const [city, setCity] = useState("");
-  // ▲▲
+  // ▲
 
   const [gender, setGender] =
     useState<"" | "homme" | "femme" | "non-binaire" | "ne-pas-dire" | "autre">("");
@@ -82,16 +82,12 @@ export default function CreateProfile() {
     return data.publicUrl ?? null;
   }
 
-  /**
-   * Géocodage robuste :
-   * 1) essaie la RPC Postgres "geocode_city" (si tu l’as créée côté Supabase),
-   * 2) sinon fallback sur Nominatim (OpenStreetMap) côté client.
-   */
+  /** Géocodage robuste : RPC supabase `geocode_city` si dispo, sinon fallback Nominatim */
   async function geocodeCity(cityName: string): Promise<{ lat?: number; lon?: number } | null> {
     const input = cityName.trim();
     if (!input) return null;
 
-    // --- Tentative via RPC
+    // 1) RPC (si créée dans ta DB)
     try {
       const { data, error } = await supabase.rpc("geocode_city", { city_input: input });
       if (!error && data && typeof data.lat === "number" && typeof data.lon === "number") {
@@ -102,16 +98,12 @@ export default function CreateProfile() {
       console.warn("geocode_city RPC not available:", e);
     }
 
-    // --- Fallback Nominatim
+    // 2) Fallback Nominatim
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
         input
       )}&limit=1&addressdetails=0`;
-      const res = await fetch(url, {
-        // Nominatim recommande d’identifier l’app ; en front on ne peut pas
-        // changer l’en-tête User-Agent, mais on garde une requête propre.
-        headers: { Accept: "application/json" },
-      });
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
       if (!res.ok) return null;
       const json = (await res.json()) as Array<{ lat: string; lon: string }>;
       if (!json?.length) return null;
@@ -122,7 +114,6 @@ export default function CreateProfile() {
     } catch (e) {
       console.warn("Nominatim fallback error:", e);
     }
-
     return null;
   }
 
@@ -148,10 +139,10 @@ export default function CreateProfile() {
     const uploaded = await uploadAvatarIfNeeded(userId);
     if (uploaded) finalPhotoUrl = uploaded;
 
-    // Géocodage ville (RPC puis fallback Nominatim)
+    // Géocodage de la ville
     const geo = await geocodeCity(city);
 
-    // Enregistre / met à jour le profil
+    // ▶▶ PAYLOAD : on écrit city_lat/city_lng **et** lat/lng
     const payload: any = {
       id: userId,
       first_name: firstName.trim(),
@@ -165,6 +156,8 @@ export default function CreateProfile() {
     if (geo?.lat != null && geo?.lon != null) {
       payload.city_lat = geo.lat;
       payload.city_lng = geo.lon;
+      payload.lat = geo.lat;   // <- NEW
+      payload.lng = geo.lon;   // <- NEW
     }
 
     const { error: dbErr } = await supabase.from("profiles").upsert(payload, { onConflict: "id" });
@@ -175,8 +168,7 @@ export default function CreateProfile() {
       return;
     }
 
-    // (Optionnel) initialise les préférences de position pour Discover
-    // On ignore silencieusement si la table/colonnes n’existent pas.
+    // (Optionnel) init préférences pour Discover (ignore si table inexistante)
     if (geo?.lat != null && geo?.lon != null) {
       try {
         await supabase
@@ -186,7 +178,6 @@ export default function CreateProfile() {
               user_id: userId,
               home_lat: geo.lat,
               home_lng: geo.lon,
-              // un défaut raisonnable (modifiable ensuite dans Preferences)
               distance_km: 50,
               updated_at: new Date().toISOString(),
             },
@@ -198,7 +189,7 @@ export default function CreateProfile() {
     }
 
     setSaving(false);
-    // ▼ flag onboarding pour la page Preferences
+    // Vers Preferences (onboarding)
     navigate("/preferences?from=onboarding", { state: { from: "onboarding" } });
   };
 
@@ -227,9 +218,7 @@ export default function CreateProfile() {
       <Card style={styles.cardInner}>
         <div style={styles.header}>
           <HeartsLogo />
-          <h2 className="h2" style={styles.title}>
-            Crée ton profil
-          </h2>
+          <h2 className="h2" style={styles.title}>Crée ton profil</h2>
         </div>
 
         <form onSubmit={onSubmit} style={styles.form}>
@@ -283,7 +272,7 @@ export default function CreateProfile() {
             <div style={styles.genderSelectWrap} ref={genderWrapRef}>
               <button
                 type="button"
-                onClick={() => setGenderOpen((v) => !v)}
+                onClick={() => setGenderOpen(v => !v)}
                 aria-haspopup="listbox"
                 aria-expanded={genderOpen}
                 style={{
@@ -307,28 +296,22 @@ export default function CreateProfile() {
 
               {genderOpen && (
                 <div role="listbox" style={styles.genderMenu}>
-                  {["homme", "femme", "non-binaire", "ne-pas-dire"].map((opt) => (
+                  {["homme","femme","non-binaire","ne-pas-dire"].map(opt => (
                     <button
                       key={opt}
                       type="button"
                       role="option"
                       aria-selected={gender === (opt as any)}
-                      onClick={() => {
-                        setGender(opt as any);
-                        setGenderOpen(false);
-                      }}
+                      onClick={() => { setGender(opt as any); setGenderOpen(false); }}
                       style={{
                         ...styles.genderOption,
                         ...(gender === (opt as any) ? styles.genderOptionActive : {}),
                       }}
                     >
-                      {opt === "homme"
-                        ? "Homme"
-                        : opt === "femme"
-                        ? "Femme"
-                        : opt === "non-binaire"
-                        ? "Non-binaire"
-                        : "Je préfère ne pas dire"}
+                      {opt === "homme" ? "Homme" :
+                       opt === "femme" ? "Femme" :
+                       opt === "non-binaire" ? "Non-binaire" :
+                       "Je préfère ne pas dire"}
                     </button>
                   ))}
 
@@ -336,10 +319,7 @@ export default function CreateProfile() {
                     <input
                       type="text"
                       value={customGender}
-                      onChange={(e) => {
-                        setCustomGender(e.target.value);
-                        if (gender !== "autre") setGender("autre");
-                      }}
+                      onChange={(e) => { setCustomGender(e.target.value); if (gender !== "autre") setGender("autre"); }}
                       placeholder="Autre (préciser)"
                       style={styles.genderCustomInput}
                       disabled={saving}
@@ -368,8 +348,7 @@ export default function CreateProfile() {
               placeholder="ex. Loïc"
               style={{
                 ...styles.input,
-                borderColor:
-                  firstName.length === 0 ? COLORS.border : firstNameValid ? "rgba(73,218,131,0.7)" : "rgba(255,107,107,0.7)",
+                borderColor: firstName.length === 0 ? COLORS.border : firstNameValid ? "rgba(73,218,131,0.7)" : "rgba(255,107,107,0.7)",
               }}
               autoComplete="given-name"
               disabled={saving}
@@ -419,45 +398,11 @@ const styles: Record<string, React.CSSProperties> = {
   title: { margin: "2px 0 10px", fontWeight: 800, opacity: 0.95 },
   form: { display: "flex", flexDirection: "column", gap: 16, marginTop: 8 },
   photoRow: { display: "grid", placeItems: "center", gap: 8 },
-  photoFrame: {
-    width: 120,
-    height: 120,
-    borderRadius: "50%",
-    background: "rgba(255,255,255,0.08)",
-    border: `2px solid ${COLORS.border}`,
-    display: "grid",
-    placeItems: "center",
-    overflow: "hidden",
-  },
+  photoFrame: { width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `2px solid ${COLORS.border}`, display: "grid", placeItems: "center", overflow: "hidden" },
   photoImg: { width: "100%", height: "100%", objectFit: "cover" },
-  photoBtn: {
-    display: "block",
-    margin: "16px auto 0",
-    border: "none",
-    background: COLORS.coral,
-    color: COLORS.white,
-    borderRadius: 20,
-    padding: "10px 14px",
-    fontWeight: 700,
-    cursor: "pointer",
-    boxShadow: "0 10px 22px rgba(255,107,107,0.28)",
-  },
+  photoBtn: { display: "block", margin: "16px auto 0", border: "none", background: COLORS.coral, color: COLORS.white, borderRadius: 20, padding: "10px 14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 10px 22px rgba(255,107,107,0.28)" },
   genderSelectWrap: { position: "relative" },
-  genderToggle: {
-    width: "100%",
-    padding: "14px 14px",
-    borderRadius: 14,
-    border: `2px solid ${COLORS.border}`,
-    background: "rgba(255,255,255,0.08)",
-    color: COLORS.text,
-    outline: "none",
-    fontSize: 16,
-    fontWeight: 800,
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    cursor: "pointer",
-  },
+  genderToggle: { width: "100%", padding: "14px 14px", borderRadius: 14, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.text, outline: "none", fontSize: 16, fontWeight: 800, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" },
   genderMenu: {
     position: "absolute",
     zIndex: 10,
@@ -473,55 +418,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     gap: 6,
   },
-  genderOption: {
-    textAlign: "left",
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: "1px solid transparent",
-    background: "transparent",
-    color: COLORS.white,
-    cursor: "pointer",
-    fontWeight: 700,
-  },
+  genderOption: { textAlign: "left", padding: "12px 14px", borderRadius: 12, border: "1px solid transparent", background: "transparent", color: COLORS.white, cursor: "pointer", fontWeight: 700 },
   genderOptionActive: { background: "rgba(255,107,107,0.15)", borderColor: "rgba(255,107,107,0.35)" },
-  genderCustomRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr auto",
-    gap: 8,
-    paddingTop: 4,
-    borderTop: `1px dashed ${COLORS.border}`,
-    marginTop: 4,
-  },
-  genderCustomInput: {
-    padding: "12px 12px",
-    borderRadius: 12,
-    border: `2px solid ${COLORS.border}`,
-    background: "rgba(255,255,255,0.08)",
-    color: COLORS.white,
-    outline: "none",
-    fontSize: 15,
-  },
-  genderSaveBtn: {
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: `2px solid ${COLORS.border}`,
-    background: COLORS.coral,
-    color: COLORS.white,
-    fontWeight: 800,
-    cursor: "pointer",
-    opacity: 1,
-  },
+  genderCustomRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, paddingTop: 4, borderTop: `1px dashed ${COLORS.border}`, marginTop: 4 },
+  genderCustomInput: { padding: "12px 12px", borderRadius: 12, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.white, outline: "none", fontSize: 15 },
+  genderSaveBtn: { padding: "12px 14px", borderRadius: 12, border: `2px solid ${COLORS.border}`, background: COLORS.coral, color: COLORS.white, fontWeight: 800, cursor: "pointer", opacity: 1 },
   label: { display: "flex", flexDirection: "column", gap: 8, fontSize: 14, opacity: 0.95 },
-  input: {
-    width: "100%",
-    padding: "14px 14px",
-    borderRadius: 14,
-    border: `2px solid ${COLORS.border}`,
-    background: "rgba(255,255,255,0.08)",
-    color: COLORS.text,
-    outline: "none",
-    fontSize: 16,
-    caretColor: COLORS.white,
-  },
+  input: { width: "100%", padding: "14px 14px", borderRadius: 14, border: `2px solid ${COLORS.border}`, background: "rgba(255,255,255,0.08)", color: COLORS.text, outline: "none", fontSize: 16, caretColor: COLORS.white },
   error: { color: "#FFD2D2", fontSize: 13, marginTop: -6 },
 };
+
