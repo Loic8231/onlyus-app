@@ -59,7 +59,6 @@ type ProfileRow = {
   preferred_genders: string[] | null;
   preferred_min_age: number | null;
   preferred_max_age: number | null;
-  // (plus de distance ici — lue via profile_preferences)
 };
 
 function ageFromBirthdate(d?: string | null) {
@@ -112,6 +111,9 @@ export default function UserProfileScreen() {
   const [row, setRow] = useState<ProfileRow | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Pour le retour intelligent
+  const [hasActiveMatch, setHasActiveMatch] = useState(false);
+
   // distance stockée dans profile_preferences
   const [distanceKm, setDistanceKm] = useState<number | null>(null);
 
@@ -136,6 +138,7 @@ export default function UserProfileScreen() {
       const userId = u?.user?.id;
       if (!userId) { setLoading(false); return; }
 
+      // Charge profil + préférences
       const [{ data: pData }, { data: prefData }] = await Promise.all([
         supabase
           .from("profiles")
@@ -151,6 +154,17 @@ export default function UserProfileScreen() {
           .eq("user_id", userId)
           .maybeSingle(),
       ]);
+
+      // Vérifie s’il existe un match actif
+      const { data: active } = await supabase
+        .from("matches")
+        .select("id")
+        .or(`user1.eq.${userId},user2.eq.${userId}`)
+        .eq("active", true)
+        .limit(1)
+        .maybeSingle();
+
+      setHasActiveMatch(!!active?.id);
 
       const r = (pData as ProfileRow) ?? null;
       setRow(r);
@@ -289,14 +303,12 @@ export default function UserProfileScreen() {
   useEffect(() => {
     if (!row?.id) return;
     scheduleSave({ city: cityDraft || null });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cityDraft]);
+  }, [cityDraft]); // eslint-disable-line
 
   useEffect(() => {
     if (!row?.id) return;
     scheduleSave({ bio: bioDraft || null });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bioDraft]);
+  }, [bioDraft]); // eslint-disable-line
 
   /** ---------- résumé des préférences ---------- */
   const prefSummary = useMemo(() => {
@@ -306,8 +318,8 @@ export default function UserProfileScreen() {
     const dist = distanceKm ?? undefined;
 
     const labelMap: Record<string, string> = {
-      "homme": "Homme",
-      "femme": "Femme",
+      homme: "Homme",
+      femme: "Femme",
       "non-binaire": "Non-binaire",
       "ne-pas-dire": "Ne pas dire",
     };
@@ -324,6 +336,12 @@ export default function UserProfileScreen() {
     return { gText, ageText, distText };
   }, [row?.preferred_genders, row?.preferred_min_age, row?.preferred_max_age, distanceKm]);
 
+  /** ---------- retour intelligent (avec replace) ---------- */
+  const handleSmartBack = () => {
+    if (hasActiveMatch) navigate("/chat", { replace: true });
+    else navigate("/discover", { replace: true });
+  };
+
   if (loading) {
     return <div style={{ color: "#fff", padding: 20 }}>Chargement…</div>;
   }
@@ -332,24 +350,34 @@ export default function UserProfileScreen() {
     <div style={screenStyle}>
       {/* Header */}
       <header style={headerStyle}>
-        <button aria-label="Retour" onClick={() => navigate(-1)} style={{ background: "transparent", border: "none", cursor: "pointer" }}>
+        <button
+          aria-label="Retour"
+          onClick={handleSmartBack}
+          style={{ background: "transparent", border: "none", cursor: "pointer" }}
+        >
           <BackIcon />
         </button>
         <div style={{ fontWeight: 800, display: "flex", alignItems: "center", gap: 10 }}>
           Mon profil
           {saveState !== "idle" && (
-            <span style={{
-              fontSize: 12,
-              padding: "2px 8px",
-              borderRadius: 999,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.08)"
-            }}>
+            <span
+              style={{
+                fontSize: 12,
+                padding: "2px 8px",
+                borderRadius: 999,
+                border: `1px solid ${COLORS.border}`,
+                background: "rgba(255,255,255,0.08)",
+              }}
+            >
               {saveState === "saving" ? "Sauvegarde…" : saveState === "saved" ? "✔ Sauvegardé" : "⚠︎ Erreur"}
             </span>
           )}
         </div>
-        <button aria-label="Paramètres" onClick={() => navigate("/settings")} style={{ background: "transparent", border: "none", cursor: "pointer" }}>
+        <button
+          aria-label="Paramètres"
+          onClick={() => navigate("/settings")}
+          style={{ background: "transparent", border: "none", cursor: "pointer" }}
+        >
           <SettingsIcon />
         </button>
       </header>
@@ -388,9 +416,16 @@ export default function UserProfileScreen() {
                 ) : (
                   <div
                     style={{
-                      width: 86, height: 86, borderRadius: 999, background: "transparent",
-                      border: `2px dashed ${COLORS.inputBorder}`, display: "flex", alignItems: "center",
-                      justifyContent: "center", color: COLORS.text, boxShadow: SHADOWS.tight,
+                      width: 86,
+                      height: 86,
+                      borderRadius: 999,
+                      background: "transparent",
+                      border: `2px dashed ${COLORS.inputBorder}`,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: COLORS.text,
+                      boxShadow: SHADOWS.tight,
                     }}
                   >
                     <span style={{ fontSize: 12, opacity: 0.8 }}>Photo</span>
@@ -402,18 +437,14 @@ export default function UserProfileScreen() {
             <div style={{ flex: 1, minWidth: 260 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <h1 style={{ margin: 0, fontSize: 22 }}>
-                  {name}{age ? `, ${age}` : ""}
+                  {name}
+                  {age ? `, ${age}` : ""}
                 </h1>
               </div>
 
               {/* Ville */}
               <div style={{ color: COLORS.text, marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <input
-                  value={cityDraft}
-                  onChange={(e) => setCityDraft(e.target.value)}
-                  placeholder="Ville"
-                  style={{ ...textInputStyle, minWidth: 180 }}
-                />
+                <input value={cityDraft} onChange={(e) => setCityDraft(e.target.value)} placeholder="Ville" style={{ ...textInputStyle, minWidth: 180 }} />
               </div>
             </div>
           </div>
@@ -439,9 +470,15 @@ export default function UserProfileScreen() {
             </button>
           </div>
           <div style={{ color: COLORS.text, display: "grid", gap: 6 }}>
-            <div><strong>Genre voulu :</strong> {prefSummary.gText}</div>
-            <div><strong>Âge :</strong> {prefSummary.ageText}</div>
-            <div><strong>Distance max :</strong> {prefSummary.distText}</div>
+            <div>
+              <strong>Genre voulu :</strong> {prefSummary.gText}
+            </div>
+            <div>
+              <strong>Âge :</strong> {prefSummary.ageText}
+            </div>
+            <div>
+              <strong>Distance max :</strong> {prefSummary.distText}
+            </div>
           </div>
         </section>
 
@@ -581,7 +618,12 @@ export default function UserProfileScreen() {
             <input
               value={newInterest}
               onChange={(e) => setNewInterest(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addInterest(); }}}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addInterest();
+                }
+              }}
               placeholder="Ajouter un intérêt"
               style={{ ...textInputStyle, minWidth: 220 }}
             />
