@@ -1,0 +1,66 @@
+/* ========= RESET DÉMO ========= */
+#root {
+  margin: 0;
+  padding: 0;
+  max-width: none;
+  text-align: initial;
+}
+
+/* ========= ANIMATIONS DE ROUTE ========= */
+.route-fade {
+  animation: routeFade .28s ease both;
+  will-change: opacity, transform;
+}
+
+@keyframes routeFade {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========= STYLE DE BASE ========= */
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #0B2A5A; /* ton fond bleu marine */
+  color: #fff;
+}
+
+/* —— Safe areas iOS (encoches) —— */
+.app-safe {
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+
+/* —— Transition douce déjà validée hier —— */
+.route-fade {
+  animation: routeFade .28s ease both;
+  will-change: opacity, transform;
+}
+@keyframes routeFade {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* —— Typo responsive prête à l’emploi —— */
+.h1 { font-size: clamp(26px, 6vw, 40px); font-weight: 800; }
+.h2 { font-size: clamp(20px, 5vw, 30px); font-weight: 800; }
+.p  { font-size: clamp(14px, 4.2vw, 18px); line-height: 1.4; }
+
+/* —— Boutons : taille tactile minimum —— */
+.btn { min-height: 44px; padding: 14px 18px; border-radius: 22px; }
+
+/* —— Cartes/shell largeur max (tablettes & desktop) —— */
+.phone-max { width: 100%; max-width: 520px; margin-inline: auto; }
+
+/* —— Très petits écrans (ex: 320–360px) —— */
+@media (max-width: 360px) {
+  .tight { transform: scale(.97); transform-origin: top center; }
+}
+
+
