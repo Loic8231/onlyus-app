@@ -70,7 +70,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  return R * (2 * Math.atan2(Math.sqrt(1 - a), Math.sqrt(a)));
 }
 
 export default function Discover() {
@@ -79,6 +79,7 @@ export default function Discover() {
   const [items, setItems] = useState<CardProfile[]>([]);
   const [userPhoto, setUserPhoto] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [isLiking, setIsLiking] = useState(false);
   const navigate = useNavigate();
 
   // 🔹 Chargement des profils proches
@@ -86,7 +87,10 @@ export default function Discover() {
     (async () => {
       setLoading(true);
 
-      const { data: u } = await supabase.auth.getUser();
+      const { data: u, error: authErr } = await supabase.auth.getUser();
+      if (authErr) {
+        console.error("[discover] auth.getUser error:", authErr);
+      }
       const userId = u?.user?.id;
       if (!userId) {
         setItems([]);
@@ -95,20 +99,22 @@ export default function Discover() {
       }
 
       // 1) Lecture de MES coord et rayon
-      const { data: me } = await supabase
+      const { data: me, error: meErr } = await supabase
         .from("profiles")
         .select("photo_url, lat, lng, city_lat, city_lng, preferred_distance_km")
         .eq("id", userId)
         .maybeSingle();
+      if (meErr) console.warn("[discover] profiles(me) error:", meErr);
 
       if (me?.photo_url) setUserPhoto(me.photo_url || "");
 
       // radius : profile_preferences.distance_km > profiles.preferred_distance_km > 50
-      const { data: pref } = await supabase
+      const { data: pref, error: prefErr } = await supabase
         .from("profile_preferences")
         .select("distance_km")
         .eq("user_id", userId)
         .maybeSingle();
+      if (prefErr) console.warn("[discover] preferences error:", prefErr);
 
       const myLat = (me as any)?.lat ?? (me as any)?.city_lat ?? null;
       const myLon = (me as any)?.lng ?? (me as any)?.city_lng ?? null;
@@ -132,7 +138,9 @@ export default function Discover() {
           p_limit: 30,
         });
 
-        if (!error && Array.isArray(data) && data.length > 0) {
+        if (error) {
+          console.info("[discover] find_nearby_profiles not used:", error.message);
+        } else if (Array.isArray(data) && data.length > 0) {
           const rows = (data as NearbyRow[]) || [];
           mapped = rows.map((r) => ({
             id: r.id,
@@ -145,8 +153,8 @@ export default function Discover() {
             distance_km: r.distance_km ?? null,
           }));
         }
-      } catch {
-        // ignore RPC errors, we will fallback
+      } catch (e) {
+        console.info("[discover] find_nearby_profiles threw (ignored):", e);
       }
 
       // 3) Fallback sans RPC : select + filtre JS par distance
@@ -161,6 +169,7 @@ export default function Discover() {
           .limit(200);
 
         if (selErr || !raw) {
+          if (selErr) console.error("[discover] profiles list error:", selErr);
           setItems([]);
           setLoading(false);
           return;
@@ -208,45 +217,52 @@ export default function Discover() {
     const userId = u?.user?.id;
     if (!userId) return;
 
-    await supabase.from("passes").insert([{ user_id: userId, target_id: profile.id }]);
+    const { error } = await supabase
+      .from("passes")
+      .insert([{ user_id: userId, target_id: profile.id }]);
+    if (error) console.warn("[discover] pass insert error:", error);
+
     setShowInfo(false);
     setItems((prev) => prev.filter((p) => p.id !== profile.id));
   };
 
-  // ❤️ Liker un profil (RPC like_profile avec fallback)
+  // ❤️ Liker un profil (RPC like_profile avec logs + fallback)
   const like = async () => {
-    if (!profile) return;
-    const { data: u } = await supabase.auth.getUser();
+    if (!profile || isLiking) return;
+    setIsLiking(true);
+
+    const { data: u, error: authErr } = await supabase.auth.getUser();
+    if (authErr) {
+      console.error("[discover] auth error:", authErr);
+      setIsLiking(false);
+      return;
+    }
     const userId = u?.user?.id;
-    if (!userId) return;
+    if (!userId) {
+      setIsLiking(false);
+      return;
+    }
 
     let matchId: string | null = null;
 
-    // 1) Essaye notre RPC "like_profile" (préconisé)
-    try {
-      const { data, error } = await supabase.rpc("like_profile", {
-        target_id: profile.id,
-      });
-      if (!error) {
-        matchId = data?.[0]?.match_id ?? null;
-      }
-    } catch {
-      // ignore
+    // 1) Appel RPC principal
+    const { data: lpData, error: lpError } = await supabase.rpc("like_profile", {
+      target_id: profile.id,
+    });
+    if (lpError) {
+      console.error("[discover] like_profile error:", lpError);
+    } else {
+      matchId = lpData?.[0]?.match_id ?? null;
     }
 
-    // 2) Fallback sur ton ancienne fonction si elle existe encore
+    // 2) (Optionnel) ancienne RPC en secours
     if (!matchId) {
-      try {
-        const { data, error } = await supabase.rpc("create_like_and_maybe_match", {
-          p_liker_id: userId,
-          p_liked_id: profile.id,
-        });
-        if (!error && data?.[0]?.matched) {
-          matchId = data[0].match_id ?? null;
-        }
-      } catch {
-        // ignore
-      }
+      const { data: oldData, error: oldErr } = await supabase.rpc(
+        "create_like_and_maybe_match",
+        { p_liker_id: userId, p_liked_id: profile.id }
+      );
+      if (oldErr) console.warn("[discover] fallback RPC error:", oldErr);
+      if (oldData?.[0]?.matched) matchId = oldData[0].match_id ?? null;
     }
 
     if (matchId) {
@@ -257,28 +273,28 @@ export default function Discover() {
         .in("id", [userId, profile.id]);
 
       if (pErr) {
-        console.warn("profiles fetch error:", pErr.message);
+        console.error("[discover] profiles fetch error:", pErr);
+        setIsLiking(false);
         return;
       }
 
       const meP = profs?.find((p) => p.id === userId);
       const otherP = profs?.find((p) => p.id === profile.id);
-
-      const age = (iso?: string | null) => (iso ? ageFromBirthdate(iso) ?? null : null);
+      const age = (iso?: string | null) => {
+        if (!iso) return null;
+        const b = new Date(iso);
+        const n = new Date();
+        let a = n.getFullYear() - b.getFullYear();
+        const m = n.getMonth() - b.getMonth();
+        if (m < 0 || (m === 0 && n.getDate() < b.getDate())) a--;
+        return a;
+      };
 
       navigate("/match", {
         state: {
           matchId,
-          me: {
-            id: userId,
-            firstName: meP?.first_name ?? "",
-            age: age(meP?.birthdate),
-          },
-          other: {
-            id: profile.id,
-            firstName: otherP?.first_name ?? profile.name ?? "",
-            age: age(otherP?.birthdate),
-          },
+          me: { id: userId, firstName: meP?.first_name ?? "", age: age(meP?.birthdate) ?? null },
+          other: { id: profile.id, firstName: otherP?.first_name ?? profile.name ?? "", age: age(otherP?.birthdate) ?? null },
         },
       });
     } else {
@@ -286,6 +302,8 @@ export default function Discover() {
       setItems((prev) => prev.filter((p) => p.id !== profile.id));
       setShowInfo(false);
     }
+
+    setIsLiking(false);
   };
 
   const openSettings = () => navigate("/settings");
@@ -391,15 +409,17 @@ export default function Discover() {
                 onClick={like}
                 style={{
                   ...styles.actionBtn,
-                  background: COLORS.coral,
+                  background: isLiking ? "rgba(255,107,107,0.55)" : COLORS.coral,
                   borderColor: "transparent",
                   color: COLORS.white,
+                  opacity: isLiking ? 0.8 : 1,
+                  cursor: isLiking ? "not-allowed" : "pointer",
                 }}
                 aria-label="Aimer"
                 title="Aimer"
-                disabled={!profile}
+                disabled={!profile || isLiking}
               >
-                ❤️
+                {isLiking ? "…" : "❤️"}
               </button>
             </div>
           </>
@@ -540,3 +560,4 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
+
