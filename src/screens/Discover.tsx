@@ -70,7 +70,8 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(1 - a), Math.sqrt(a)));
+  // ✅ ordre correct: atan2(√a, √(1-a))
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 export default function Discover() {
@@ -88,9 +89,7 @@ export default function Discover() {
       setLoading(true);
 
       const { data: u, error: authErr } = await supabase.auth.getUser();
-      if (authErr) {
-        console.error("[discover] auth.getUser error:", authErr);
-      }
+      if (authErr) console.error("[discover] auth.getUser error:", authErr);
       const userId = u?.user?.id;
       if (!userId) {
         setItems([]);
@@ -226,7 +225,7 @@ export default function Discover() {
     setItems((prev) => prev.filter((p) => p.id !== profile.id));
   };
 
-  // ❤️ Liker un profil (RPC like_profile avec logs + fallback)
+  // ❤️ Liker un profil (RPC like_profile, sans fallback)
   const like = async () => {
     if (!profile || isLiking) return;
     setIsLiking(true);
@@ -245,7 +244,6 @@ export default function Discover() {
 
     let matchId: string | null = null;
 
-    // 1) Appel RPC principal
     const { data: lpData, error: lpError } = await supabase.rpc("like_profile", {
       target_id: profile.id,
     });
@@ -255,23 +253,12 @@ export default function Discover() {
       matchId = lpData?.[0]?.match_id ?? null;
     }
 
-    // 2) (Optionnel) ancienne RPC en secours
-    if (!matchId) {
-      const { data: oldData, error: oldErr } = await supabase.rpc(
-        "create_like_and_maybe_match",
-        { p_liker_id: userId, p_liked_id: profile.id }
-      );
-      if (oldErr) console.warn("[discover] fallback RPC error:", oldErr);
-      if (oldData?.[0]?.matched) matchId = oldData[0].match_id ?? null;
-    }
-
     if (matchId) {
       // Récupère prénoms + âges pour l’écran Match
       const { data: profs, error: pErr } = await supabase
         .from("profiles")
         .select("id, first_name, birthdate")
         .in("id", [userId, profile.id]);
-
       if (pErr) {
         console.error("[discover] profiles fetch error:", pErr);
         setIsLiking(false);
@@ -560,4 +547,3 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
-
