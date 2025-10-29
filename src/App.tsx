@@ -1,6 +1,6 @@
 // src/App.tsx
 import React, { Suspense, useEffect, useState } from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "./lib/supabaseClient";
 
 /**
@@ -76,6 +76,104 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** 🔔 Bridge Realtime + check au démarrage */
+function MatchRealtimeBridge() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let mounted = true;
+
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id;
+      if (!mounted || !userId) return;
+
+      // 1) Check au démarrage : un match non vu ?
+      const { data: pending } = await supabase
+        .from("match_participants")
+        .select("match_id, other_user_id")
+        .eq("user_id", userId)
+        .eq("seen", false)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (pending && pending.length) {
+        const p = pending[0];
+        const { data: profiles } = await supabase
+          .from("profiles")
+          .select("id, first_name, birthdate")
+          .in("id", [userId, p.other_user_id]);
+
+        const meP = profiles?.find((pr) => pr.id === userId);
+        const otherP = profiles?.find((pr) => pr.id === p.other_user_id);
+        const age = (iso?: string | null) => {
+          if (!iso) return null;
+          const b = new Date(iso);
+          const now = new Date();
+          let a = now.getFullYear() - b.getFullYear();
+          const m = now.getMonth() - b.getMonth();
+          if (m < 0 || (m === 0 && now.getDate() < b.getDate())) a--;
+          return a;
+        };
+
+        navigate("/match", {
+          state: {
+            matchId: p.match_id,
+            me: { id: userId, firstName: meP?.first_name ?? "", age: age(meP?.birthdate) ?? null },
+            other: { id: p.other_user_id, firstName: otherP?.first_name ?? "", age: age(otherP?.birthdate) ?? null },
+          },
+        });
+        return; // évite double navigation si l’event insert arrive juste après
+      }
+
+      // 2) Écoute en live (insertions sur match_participants pour moi)
+      channel = supabase
+        .channel(`matches-for-${userId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "match_participants", filter: `user_id=eq.${userId}` },
+          async (payload) => {
+            const { match_id, other_user_id } = (payload as any).new ?? {};
+            const { data: profiles } = await supabase
+              .from("profiles")
+              .select("id, first_name, birthdate")
+              .in("id", [userId, other_user_id]);
+
+            const meP = profiles?.find((p) => p.id === userId);
+            const otherP = profiles?.find((p) => p.id === other_user_id);
+
+            const age = (iso?: string | null) => {
+              if (!iso) return null;
+              const b = new Date(iso);
+              const now = new Date();
+              let a = now.getFullYear() - b.getFullYear();
+              const m = now.getMonth() - b.getMonth();
+              if (m < 0 || (m === 0 && now.getDate() < b.getDate())) a--;
+              return a;
+            };
+
+            navigate("/match", {
+              state: {
+                matchId: match_id,
+                me: { id: userId, firstName: meP?.first_name ?? "", age: age(meP?.birthdate) ?? null },
+                other: { id: other_user_id, firstName: otherP?.first_name ?? "", age: age(otherP?.birthdate) ?? null },
+              },
+            });
+          }
+        )
+        .subscribe();
+    })();
+
+    return () => {
+      mounted = false;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [navigate]);
+
+  return null;
+}
+
 /**
  * 3) APP
  */
@@ -84,6 +182,9 @@ export default function App() {
 
   return (
     <Shell>
+      {/* 🔔 Listener global aux matches */}
+      <MatchRealtimeBridge />
+
       <div className="app-safe">
         <div key={location.pathname} className="route-fade">
           <Routes location={location}>

@@ -110,14 +110,10 @@ export default function Discover() {
         .eq("user_id", userId)
         .maybeSingle();
 
-      const myLat =
-        (me as any)?.lat ?? (me as any)?.city_lat ?? null;
-      const myLon =
-        (me as any)?.lng ?? (me as any)?.city_lng ?? null;
+      const myLat = (me as any)?.lat ?? (me as any)?.city_lat ?? null;
+      const myLon = (me as any)?.lng ?? (me as any)?.city_lng ?? null;
       const radius =
-        (pref as any)?.distance_km ??
-        (me as any)?.preferred_distance_km ??
-        50;
+        (pref as any)?.distance_km ?? (me as any)?.preferred_distance_km ?? 50;
 
       if (myLat == null || myLon == null) {
         setItems([]);
@@ -217,30 +213,79 @@ export default function Discover() {
     setItems((prev) => prev.filter((p) => p.id !== profile.id));
   };
 
-  // ❤️ Liker un profil
+  // ❤️ Liker un profil (RPC like_profile avec fallback)
   const like = async () => {
     if (!profile) return;
     const { data: u } = await supabase.auth.getUser();
     const userId = u?.user?.id;
     if (!userId) return;
 
-    const { data, error } = await supabase.rpc("create_like_and_maybe_match", {
-      p_liker_id: userId,
-      p_liked_id: profile.id,
-    });
+    let matchId: string | null = null;
 
-    if (error) {
-      console.warn("like error:", error.message);
-      return;
+    // 1) Essaye notre RPC "like_profile" (préconisé)
+    try {
+      const { data, error } = await supabase.rpc("like_profile", {
+        target_id: profile.id,
+      });
+      if (!error) {
+        matchId = data?.[0]?.match_id ?? null;
+      }
+    } catch {
+      // ignore
     }
 
-    if (data?.[0]?.matched) {
-      navigate("/match", { state: { matchId: data[0].match_id } });
+    // 2) Fallback sur ton ancienne fonction si elle existe encore
+    if (!matchId) {
+      try {
+        const { data, error } = await supabase.rpc("create_like_and_maybe_match", {
+          p_liker_id: userId,
+          p_liked_id: profile.id,
+        });
+        if (!error && data?.[0]?.matched) {
+          matchId = data[0].match_id ?? null;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (matchId) {
+      // Récupère prénoms + âges pour l’écran Match
+      const { data: profs, error: pErr } = await supabase
+        .from("profiles")
+        .select("id, first_name, birthdate")
+        .in("id", [userId, profile.id]);
+
+      if (pErr) {
+        console.warn("profiles fetch error:", pErr.message);
+        return;
+      }
+
+      const meP = profs?.find((p) => p.id === userId);
+      const otherP = profs?.find((p) => p.id === profile.id);
+
+      const age = (iso?: string | null) => (iso ? ageFromBirthdate(iso) ?? null : null);
+
+      navigate("/match", {
+        state: {
+          matchId,
+          me: {
+            id: userId,
+            firstName: meP?.first_name ?? "",
+            age: age(meP?.birthdate),
+          },
+          other: {
+            id: profile.id,
+            firstName: otherP?.first_name ?? profile.name ?? "",
+            age: age(otherP?.birthdate),
+          },
+        },
+      });
     } else {
+      // pas encore réciproque → on retire la carte et on continue
       setItems((prev) => prev.filter((p) => p.id !== profile.id));
+      setShowInfo(false);
     }
-
-    setShowInfo(false);
   };
 
   const openSettings = () => navigate("/settings");
@@ -495,5 +540,3 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
-
-
