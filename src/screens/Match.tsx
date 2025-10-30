@@ -1,5 +1,5 @@
 // src/screens/Match.tsx
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 
@@ -25,13 +25,16 @@ type UserMini = {
   name: string;
   age?: number | null;
   gradient?: [string, string];
-  photoUrl?: string;
+  photoUrl?: string | null;
 };
 
 export default function Match() {
   const navigate = useNavigate();
   const location = useLocation();
   const state = (location.state || {}) as MatchState;
+
+  const [mePhoto, setMePhoto] = useState<string | null>(null);
+  const [otherPhoto, setOtherPhoto] = useState<string | null>(null);
 
   // Marque le match comme "vu" pour l'utilisateur courant
   useEffect(() => {
@@ -49,16 +52,46 @@ export default function Match() {
     })();
   }, [state?.matchId]);
 
+  // Récupère les photos des 2 utilisateurs
+  useEffect(() => {
+    (async () => {
+      if (!state?.me?.id || !state?.other?.id) return;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, photo_url")
+        .in("id", [state.me.id, state.other.id]);
+
+      if (error) {
+        console.warn("[match] fetch photos error:", error);
+        return;
+      }
+      const meRow = data?.find((p) => p.id === state.me.id);
+      const otherRow = data?.find((p) => p.id === state.other.id);
+      setMePhoto(meRow?.photo_url ?? null);
+      setOtherPhoto(otherRow?.photo_url ?? null);
+    })();
+  }, [state?.me?.id, state?.other?.id]);
+
   if (!state?.matchId) {
     navigate("/discover");
     return null;
   }
 
-  const me: UserMini = { name: state.me.firstName || "Toi", age: state.me.age, gradient: ["#5EFCE8", "#736EFE"] };
-  const them: UserMini = { name: state.other.firstName || "•", age: state.other.age, gradient: ["#FBD3E9", "#BB377D"] };
+  const me: UserMini = {
+    name: state.me.firstName || "Toi",
+    age: state.me.age,
+    gradient: ["#5EFCE8", "#736EFE"],
+    photoUrl: mePhoto,
+  };
+  const them: UserMini = {
+    name: state.other.firstName || "•",
+    age: state.other.age,
+    gradient: ["#FBD3E9", "#BB377D"],
+    photoUrl: otherPhoto,
+  };
 
   const handleStartChat = () => {
-    // Si tu as un chat ciblé par userId, remplace par navigate(`/chat/${state.other.id}`)
+    // Si tu as un chat par matchId/userId, adapte ici.
     navigate("/chat");
   };
 
@@ -84,12 +117,6 @@ export default function Match() {
           <button style={styles.primary} onClick={handleStartChat}>
             Démarrer la conversation
           </button>
-          <button
-            style={styles.secondary}
-            onClick={() => navigate("/discover")}
-          >
-            Continuer à découvrir
-          </button>
         </div>
       </div>
 
@@ -112,7 +139,7 @@ function Avatar({ user }: { user: UserMini }) {
                 user.gradient?.[1] ?? "#FDA085"
               })`,
         }}
-        aria-label={`Avatar de ${user.name}${user.age ? `, ${user.age} ans` : ""}`}
+        aria-label={`Avatar de ${user.name}${user.age != null ? `, ${user.age} ans` : ""}`}
       />
       <div style={styles.avatarLabel}>
         <span style={{ fontWeight: 800 }}>{user.name}</span>
