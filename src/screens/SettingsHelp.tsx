@@ -16,26 +16,11 @@ const COLORS = {
 type Faq = { q: string; a: string };
 
 const FAQ: Faq[] = [
-  {
-    q: "Je ne reçois pas le code de vérification",
-    a: "Vérifie ton dossier spam, attends 60 secondes puis renvoie le code. Assure-toi que l’adresse e-mail est correcte.",
-  },
-  {
-    q: "Comment supprimer mon compte ?",
-    a: "Va dans Paramètres → Compte → Supprimer mon compte. Cette action est définitive.",
-  },
-  {
-    q: "Comment bloquer ou signaler un utilisateur ?",
-    a: "Ouvre sa fiche profil, puis menu ⋯ → Bloquer ou Signaler. Tu peux aussi depuis la conversation.",
-  },
-  {
-    q: "Mes notifications ne s’affichent pas",
-    a: "Vérifie Paramètres → Notifications et les autorisations de ton navigateur/appareil pour OnlyUS.",
-  },
-  {
-    q: "Quelles sont les règles de sécurité ?",
-    a: "Ne partage jamais d’informations sensibles, rencontre dans un lieu public, préviens un proche et utilise l’appel vocal avant.",
-  },
+  { q: "Je ne reçois pas le code de vérification", a: "Vérifie ton dossier spam, attends 60 secondes puis renvoie le code. Assure-toi que l’adresse e-mail est correcte." },
+  { q: "Comment supprimer mon compte ?", a: "Va dans Paramètres → Compte → Supprimer mon compte. Cette action est définitive." },
+  { q: "Comment bloquer ou signaler un utilisateur ?", a: "Ouvre sa fiche profil, puis menu ⋯ → Bloquer ou Signaler. Tu peux aussi depuis la conversation." },
+  { q: "Mes notifications ne s’affichent pas", a: "Vérifie Paramètres → Notifications et les autorisations de ton navigateur/appareil pour OnlyUS." },
+  { q: "Quelles sont les règles de sécurité ?", a: "Ne partage jamais d’informations sensibles, rencontre dans un lieu public, préviens un proche et utilise l’appel vocal avant." },
 ];
 
 function BackButton({ onClick }: { onClick: () => void }) {
@@ -54,7 +39,6 @@ export default function SettingsHelp() {
 
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
-  const [includeLogs, setIncludeLogs] = useState(true);
   const canSend = subject.trim().length > 2 && message.trim().length > 5;
 
   const results = useMemo(() => {
@@ -65,24 +49,22 @@ export default function SettingsHelp() {
     );
   }, [query]);
 
-  const sendTicket = () => {
+  // Ouvre le client e-mail local avec sujet + message
+  const sendEmail = () => {
     if (!canSend) return;
-    console.log("Support ticket:", { subject, message, includeLogs });
-    setSubject("");
-    setMessage("");
-    alert("Message envoyé. Nous revenons vers toi rapidement ✉️");
-  };
+    const to = "only.usfrapp@gmail.com";
+    const subj = `[OnlyUS] ${subject.trim()}`;
+    const body = message.trim();
 
-  const mailto = () => {
-    const url = `mailto:support@onlyus.app?subject=${encodeURIComponent(
-      (subject ? "[OnlyUS] " + subject : "[OnlyUS] Support")
-    )}&body=${encodeURIComponent(message || "")}`;
+    const url = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(
+      subj
+    )}&body=${encodeURIComponent(body)}`;
+
+    // Redirection vers le client e-mail
     window.location.href = url;
   };
 
-  const goBack = () => {
-    navigate("/settings");
-  };
+  const goBack = () => navigate("/settings");
 
   return (
     <div className="app-safe phone-max" style={styles.screen}>
@@ -164,28 +146,18 @@ export default function SettingsHelp() {
           />
         </label>
 
-        <label style={styles.checkRow}>
-          <input
-            type="checkbox"
-            checked={includeLogs}
-            onChange={(e) => setIncludeLogs(e.target.checked)}
-            style={{ width: "clamp(16px,3.6vw,18px)", height: "clamp(16px,3.6vw,18px)", accentColor: COLORS.coral as any }}
-          />
-          <span>Inclure des informations techniques (journal, version)</span>
-        </label>
-
         <div style={styles.actions}>
           <button
-            onClick={sendTicket}
+            onClick={sendEmail}
             disabled={!canSend}
             style={{
               ...styles.primary,
               opacity: canSend ? 1 : 0.6,
               cursor: canSend ? "pointer" : "not-allowed",
             }}
-            aria-label="Envoyer au support"
+            aria-label="Envoyer un e-mail au support"
           >
-            Envoyer au support
+            Envoyer par e-mail
           </button>
         </div>
       </div>
@@ -299,25 +271,7 @@ const styles: Record<string, React.CSSProperties> = {
 
   h2: { margin: "clamp(2px,0.6vw,4px) 0 0", fontSize: "clamp(16px,4.6vw,18px)", fontWeight: 800 },
 
-  checkRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "clamp(6px, 1.6vw, 8px)",
-    fontSize: "clamp(13px, 3.2vw, 14px)",
-    opacity: 0.95,
-  },
-
   actions: { display: "flex", gap: "clamp(8px, 2vw, 12px)", marginTop: "clamp(2px,0.6vw,4px)" },
-  secondary: {
-    flex: 1,
-    border: `2px solid ${COLORS.border}`,
-    background: "transparent",
-    color: COLORS.white,
-    borderRadius: "clamp(12px, 3vw, 14px)",
-    padding: "clamp(10px, 2.6vw, 12px)",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
   primary: {
     flex: 1,
     border: "none",
@@ -328,20 +282,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: "pointer",
     boxShadow: "0 10px 22px rgba(255,107,107,0.35)",
-  },
-
-  linkRow: {
-    width: "100%",
-    textAlign: "left",
-    background: "transparent",
-    border: "none",
-    color: COLORS.white,
-    padding: "12px 12px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    cursor: "pointer",
-    borderRadius: 12,
   },
 
   homeIndicator: {
