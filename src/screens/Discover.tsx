@@ -245,7 +245,7 @@ export default function Discover() {
     let matchId: string | null = null;
 
     const { data: lpData, error: lpError } = await supabase.rpc("like_profile", {
-      target_id: profile.id,
+      p_target_id: profile.id,
     });
     if (lpError) {
       console.error("[discover] like_profile error:", lpError);
