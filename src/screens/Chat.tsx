@@ -17,29 +17,15 @@ const COLORS = {
   inputBorder: "rgba(255,255,255,0.22)",
 };
 
-function HeartsLogo({ size = 22, stroke = 4 }: { size?: number; stroke?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 200 200" fill="none" aria-label="OnlyUS">
-      <path
-        d="M64 41c-18 0-33 15-33 33 0 40 56 64 69 83 13-19 69-43 69-83 0-18-15-33-33-33-13 0-24 7-30 17-6-10-17-17-30-17z"
-        stroke={COLORS.coral}
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M129 66c-12 0-22 10-22 22 0 27 38 43 47 56 9-13 47-29 47-56 0-12-10-22-22-22-9 0-16 5-20 11-4-6-11-11-20-11z"
-        transform="translate(-25,0) scale(0.7)"
-        stroke={COLORS.blue}
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+type Msg = {
+  id: string;
+  from: "me" | "them";
+  text: string;
+  ts: number;
+};
 
-/* === bouton paramètres === */
+type NavState = { matchId?: string; meId?: string; otherId?: string };
+
 function SettingsButton() {
   const navigate = useNavigate();
   return (
@@ -54,7 +40,6 @@ function SettingsButton() {
   );
 }
 
-/* === bouton quitter match === */
 function QuitButton({ onClick }: { onClick?: () => void }) {
   return (
     <button
@@ -67,19 +52,6 @@ function QuitButton({ onClick }: { onClick?: () => void }) {
     </button>
   );
 }
-
-type Msg = {
-  id: string;
-  from: "me" | "them";
-  text: string;
-  ts: number;
-};
-
-type NavState = {
-  matchId?: string;
-  meId?: string;
-  otherId?: string;
-};
 
 function ageFromBirthdate(d?: string | null) {
   if (!d) return undefined;
@@ -105,11 +77,12 @@ export default function Chat() {
   const [otherPhoto, setOtherPhoto] = useState<string | null>(null);
 
   const [msgs, setMsgs] = useState<Msg[]>([]);
+  const seenIdsRef = useRef<Set<string>>(new Set()); // ← déduplication
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // 1) Récupère l’utilisateur courant
+  // 1) user courant
   useEffect(() => {
     (async () => {
       if (meId) return;
@@ -118,55 +91,43 @@ export default function Chat() {
     })();
   }, [meId]);
 
-  // 2) Si manque matchId/otherId, va chercher le dernier match actif
+  // 2) si pas d’ids fournis -> dernier match
   useEffect(() => {
     (async () => {
       if (!meId || (matchId && otherId)) return;
-
-      // Dernier match où je suis participant
-      const { data: rows, error } = await supabase
+      const { data: rows } = await supabase
         .from("match_participants")
-        .select("match_id, user_id, other_user_id, created_at")
+        .select("match_id, other_user_id, created_at")
         .eq("user_id", meId)
         .order("created_at", { ascending: false })
         .limit(1);
-
-      if (error) {
-        console.warn("[chat] fetch latest match error:", error);
-        return;
-      }
-      if (rows && rows.length) {
+      if (rows?.length) {
         setMatchId(rows[0].match_id);
         setOtherId(rows[0].other_user_id);
       }
     })();
   }, [meId, matchId, otherId]);
 
-  // 3) Charge le profil "other"
+  // 3) profil other
   useEffect(() => {
     (async () => {
       if (!otherId) return;
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from("profiles")
         .select("first_name, birthdate, photo_url")
         .eq("id", otherId)
         .maybeSingle();
-      if (error) {
-        console.warn("[chat] fetch other profile error:", error);
-        return;
-      }
       setOtherFirstName(data?.first_name ?? "•");
       setOtherAge(ageFromBirthdate(data?.birthdate));
       setOtherPhoto(data?.photo_url ?? null);
     })();
   }, [otherId]);
 
-  // 4) Charge l'historique des messages + Realtime
+  // 4) historique + realtime (avec déduplication)
   useEffect(() => {
     if (!matchId || !meId) return;
 
     let mounted = true;
-
     (async () => {
       const { data, error } = await supabase
         .from("match_messages")
@@ -174,21 +135,25 @@ export default function Chat() {
         .eq("match_id", matchId)
         .order("created_at", { ascending: true });
 
+      if (!mounted) return;
       if (error) {
         console.warn("[chat] load messages error:", error);
-      } else if (mounted) {
-        setMsgs(
-          (data ?? []).map((m) => ({
-            id: m.id,
-            from: m.sender_id === meId ? "me" : "them",
-            text: m.text,
-            ts: new Date(m.created_at as any).getTime(),
-          }))
-        );
+        return;
       }
+
+      const formatted =
+        (data ?? []).map((m) => ({
+          id: m.id,
+          from: m.sender_id === meId ? "me" : "them",
+          text: m.text,
+          ts: new Date(m.created_at as any).getTime(),
+        })) || [];
+
+      // initialise l’ensemble des ids vus
+      seenIdsRef.current = new Set(formatted.map((m) => m.id));
+      setMsgs(formatted);
     })();
 
-    // Realtime
     const channel = supabase
       .channel(`mm:${matchId}`)
       .on(
@@ -196,6 +161,8 @@ export default function Chat() {
         { event: "INSERT", schema: "public", table: "match_messages", filter: `match_id=eq.${matchId}` },
         (payload) => {
           const m = payload.new as any;
+          if (seenIdsRef.current.has(m.id)) return; // ← évite le doublon
+          seenIdsRef.current.add(m.id);
           setMsgs((arr) => [
             ...arr,
             {
@@ -209,14 +176,13 @@ export default function Chat() {
       );
 
     channel.subscribe();
-
     return () => {
       mounted = false;
       channel.unsubscribe();
     };
   }, [matchId, meId]);
 
-  // Auto-scroll + auto-grow
+  // scroll + auto-grow
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs]);
@@ -232,20 +198,23 @@ export default function Chat() {
   const send = async () => {
     if (!input.trim() || !meId || !matchId) return;
     const text = input.trim();
+
+    // 1) génère un id client → même id côté serveur (évite le doublon)
+    const id = crypto.randomUUID();
+    const optimistic: Msg = { id, from: "me", text, ts: Date.now() };
+
+    // 2) optimistic UI + marque l’id comme “vu”
+    seenIdsRef.current.add(id);
+    setMsgs((arr) => [...arr, optimistic]);
     setInput("");
 
-    // Optimistic UI
-    const temp: Msg = { id: crypto.randomUUID(), from: "me", text, ts: Date.now() };
-    setMsgs((arr) => [...arr, temp]);
-
-    // Ecriture en base
-    const { error } = await supabase.from("match_messages").insert([
-      { match_id: matchId, sender_id: meId, text },
-    ]);
-
+    // 3) écrit en base avec l’id client
+    const { error } = await supabase
+      .from("match_messages")
+      .insert([{ id, match_id: matchId, sender_id: meId, text }]);
     if (error) {
       console.warn("[chat] insert message error:", error);
-      // (optionnel) rollback visuel si échec
+      // (optionnel) rollback si besoin
     }
   };
 
@@ -282,11 +251,10 @@ export default function Chat() {
           </div>
           <div>
             <div style={styles.contactName}>{title}</div>
-            {/* statut supprimé */}
           </div>
         </div>
 
-        {/* droite : actions + paramètres + quitter */}
+        {/* droite : actions */}
         <div style={styles.actions}>
           {/* 🔗 Appel vocal -> /voice-call */}
           <button
@@ -301,9 +269,9 @@ export default function Chat() {
             🎧
           </button>
 
-          {/* 🔗 Voir profil -> /profile-details */}
+          {/* 🔗 Voir profil -> avatar cliquable (avec photo) */}
           <button
-            style={styles.iconBtn}
+            style={{ ...styles.iconBtn, padding: 4 }}
             title="Voir profil"
             aria-label="Voir profil"
             onClick={() => {
@@ -311,7 +279,17 @@ export default function Chat() {
               navigate("/profile-details", { state: { profileId: otherId } });
             }}
           >
-            <HeartsLogo />
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: "50%",
+                background: otherPhoto
+                  ? `url(${otherPhoto}) center/cover no-repeat`
+                  : "linear-gradient(135deg,#FBD3E9,#BB377D)",
+                border: `2px solid ${COLORS.border}`,
+              }}
+            />
           </button>
 
           <SettingsButton />
@@ -377,7 +355,7 @@ export default function Chat() {
   );
 }
 
-/* === Styles : responsive + clamp + safe areas === */
+/* === Styles === */
 const styles: Record<string, React.CSSProperties> = {
   screen: {
     minHeight: "100svh",
@@ -444,9 +422,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: COLORS.white,
     boxShadow: "0 10px 20px rgba(255,107,107,0.35)",
   },
-  theirs: {
-    background: `linear-gradient(180deg, ${COLORS.glassTop}, ${COLORS.glassBottom})`,
-  },
+  theirs: { background: `linear-gradient(180deg, ${COLORS.glassTop}, ${COLORS.glassBottom})` },
   text: { whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const },
   time: {
     fontSize: "clamp(10px, 2.6vw, 12px)",
@@ -501,3 +477,4 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
 };
+
