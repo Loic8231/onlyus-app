@@ -77,7 +77,7 @@ export default function Chat() {
   const [otherPhoto, setOtherPhoto] = useState<string | null>(null);
 
   const [msgs, setMsgs] = useState<Msg[]>([]);
-  const seenIdsRef = useRef<Set<string>>(new Set()); // ← déduplication
+  const seenIdsRef = useRef<Set<string>>(new Set());
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -149,7 +149,6 @@ export default function Chat() {
           ts: new Date(m.created_at as any).getTime(),
         })) || [];
 
-      // initialise l’ensemble des ids vus
       seenIdsRef.current = new Set(formatted.map((m) => m.id));
       setMsgs(formatted);
     })();
@@ -161,7 +160,7 @@ export default function Chat() {
         { event: "INSERT", schema: "public", table: "match_messages", filter: `match_id=eq.${matchId}` },
         (payload) => {
           const m = payload.new as any;
-          if (seenIdsRef.current.has(m.id)) return; // ← évite le doublon
+          if (seenIdsRef.current.has(m.id)) return;
           seenIdsRef.current.add(m.id);
           setMsgs((arr) => [
             ...arr,
@@ -177,8 +176,8 @@ export default function Chat() {
 
     channel.subscribe();
     return () => {
-      mounted = false;
       channel.unsubscribe();
+      mounted = false;
     };
   }, [matchId, meId]);
 
@@ -199,23 +198,17 @@ export default function Chat() {
     if (!input.trim() || !meId || !matchId) return;
     const text = input.trim();
 
-    // 1) génère un id client → même id côté serveur (évite le doublon)
+    // id client → même id en base pour éviter le doublon Realtime
     const id = crypto.randomUUID();
     const optimistic: Msg = { id, from: "me", text, ts: Date.now() };
-
-    // 2) optimistic UI + marque l’id comme “vu”
     seenIdsRef.current.add(id);
     setMsgs((arr) => [...arr, optimistic]);
     setInput("");
 
-    // 3) écrit en base avec l’id client
     const { error } = await supabase
       .from("match_messages")
       .insert([{ id, match_id: matchId, sender_id: meId, text }]);
-    if (error) {
-      console.warn("[chat] insert message error:", error);
-      // (optionnel) rollback si besoin
-    }
+    if (error) console.warn("[chat] insert message error:", error);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -237,21 +230,9 @@ export default function Chat() {
     <div className="app-safe phone-max" style={styles.screen}>
       {/* Topbar */}
       <header style={styles.topbar}>
-        {/* centre : contact */}
+        {/* centre : NOM + ÂGE (sans avatar) */}
         <div style={styles.contactWrap}>
-          <div style={styles.avatar}>
-            <div
-              style={{
-                ...styles.avatarPhoto,
-                background: otherPhoto
-                  ? `url(${otherPhoto}) center/cover no-repeat`
-                  : "linear-gradient(135deg,#FBD3E9,#BB377D)",
-              }}
-            />
-          </div>
-          <div>
-            <div style={styles.contactName}>{title}</div>
-          </div>
+          <div style={styles.contactName}>{title}</div>
         </div>
 
         {/* droite : actions */}
@@ -380,10 +361,21 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 10px 30px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)",
     gap: "clamp(6px, 1.6vw, 10px)",
   },
-  contactWrap: { display: "flex", alignItems: "center", gap: "clamp(8px, 1.8vw, 12px)", flex: 1 },
-  avatar: { position: "relative" as const, width: "clamp(32px, 6vw, 40px)", height: "clamp(32px, 6vw, 40px)" },
-  avatarPhoto: { width: "100%", height: "100%", borderRadius: "50%" },
-  contactName: { fontWeight: 800, letterSpacing: 0.2, fontSize: "clamp(14px, 3.6vw, 16px)" },
+  contactWrap: {
+    display: "flex",
+    alignItems: "center",
+    gap: "clamp(8px, 1.8vw, 12px)",
+    flex: 1,
+    minWidth: 0,
+  },
+  contactName: {
+    fontWeight: 800,
+    letterSpacing: 0.2,
+    fontSize: "clamp(14px, 3.6vw, 16px)",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
 
   actions: { display: "flex", alignItems: "center", gap: "clamp(6px, 1.6vw, 10px)" },
   iconBtn: {
@@ -477,4 +469,5 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
 };
+
 
