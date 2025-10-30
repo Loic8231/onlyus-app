@@ -1,6 +1,7 @@
 // src/screens/Chat.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
 
 const COLORS = {
   navy: "#0B2A5A",
@@ -74,54 +75,178 @@ type Msg = {
   ts: number;
 };
 
-const seed: Msg[] = [
-  { id: "m1", from: "them", text: "Hey 🙂 Ravie de te parler ici !", ts: Date.now() - 1000 * 60 * 7 },
-  { id: "m2", from: "me", text: "Salut ! Ton profil m’a donné envie d’écrire 👋", ts: Date.now() - 1000 * 60 * 6 },
-  { id: "m3", from: "them", text: "T’es plutôt café ou balade au soleil ?", ts: Date.now() - 1000 * 60 * 5 },
-];
+type NavState = {
+  matchId?: string;
+  meId?: string;
+  otherId?: string;
+};
+
+function ageFromBirthdate(d?: string | null) {
+  if (!d) return undefined;
+  const b = new Date(d);
+  const t = new Date();
+  let a = t.getFullYear() - b.getFullYear();
+  const m = t.getMonth() - b.getMonth();
+  if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
+  return a;
+}
 
 export default function Chat() {
-  const [msgs, setMsgs] = useState<Msg[]>(seed);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const navState = (location.state || {}) as NavState;
+
+  const [meId, setMeId] = useState<string | null>(navState.meId ?? null);
+  const [matchId, setMatchId] = useState<string | null>(navState.matchId ?? null);
+  const [otherId, setOtherId] = useState<string | null>(navState.otherId ?? null);
+
+  const [otherFirstName, setOtherFirstName] = useState<string>("•");
+  const [otherAge, setOtherAge] = useState<number | undefined>(undefined);
+  const [otherPhoto, setOtherPhoto] = useState<string | null>(null);
+
+  const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
-  const [typing, setTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
-  const navigate = useNavigate();
 
-  const contact = useMemo(() => ({ name: "Emma, 27", online: true }), []);
+  // 1) Récupère l’utilisateur courant
+  useEffect(() => {
+    (async () => {
+      if (meId) return;
+      const { data } = await supabase.auth.getUser();
+      if (data?.user?.id) setMeId(data.user.id);
+    })();
+  }, [meId]);
 
+  // 2) Si manque matchId/otherId, va chercher le dernier match actif
+  useEffect(() => {
+    (async () => {
+      if (!meId || (matchId && otherId)) return;
+
+      // Dernier match où je suis participant
+      const { data: rows, error } = await supabase
+        .from("match_participants")
+        .select("match_id, user_id, other_user_id, created_at")
+        .eq("user_id", meId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.warn("[chat] fetch latest match error:", error);
+        return;
+      }
+      if (rows && rows.length) {
+        setMatchId(rows[0].match_id);
+        setOtherId(rows[0].other_user_id);
+      }
+    })();
+  }, [meId, matchId, otherId]);
+
+  // 3) Charge le profil "other"
+  useEffect(() => {
+    (async () => {
+      if (!otherId) return;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name, birthdate, photo_url")
+        .eq("id", otherId)
+        .maybeSingle();
+      if (error) {
+        console.warn("[chat] fetch other profile error:", error);
+        return;
+      }
+      setOtherFirstName(data?.first_name ?? "•");
+      setOtherAge(ageFromBirthdate(data?.birthdate));
+      setOtherPhoto(data?.photo_url ?? null);
+    })();
+  }, [otherId]);
+
+  // 4) Charge l'historique des messages + Realtime
+  useEffect(() => {
+    if (!matchId || !meId) return;
+
+    let mounted = true;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("match_messages")
+        .select("id, match_id, sender_id, text, created_at")
+        .eq("match_id", matchId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.warn("[chat] load messages error:", error);
+      } else if (mounted) {
+        setMsgs(
+          (data ?? []).map((m) => ({
+            id: m.id,
+            from: m.sender_id === meId ? "me" : "them",
+            text: m.text,
+            ts: new Date(m.created_at as any).getTime(),
+          }))
+        );
+      }
+    })();
+
+    // Realtime
+    const channel = supabase
+      .channel(`mm:${matchId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "match_messages", filter: `match_id=eq.${matchId}` },
+        (payload) => {
+          const m = payload.new as any;
+          setMsgs((arr) => [
+            ...arr,
+            {
+              id: m.id,
+              from: m.sender_id === meId ? "me" : "them",
+              text: m.text,
+              ts: new Date(m.created_at).getTime(),
+            },
+          ]);
+        }
+      );
+
+    channel.subscribe();
+
+    return () => {
+      mounted = false;
+      channel.unsubscribe();
+    };
+  }, [matchId, meId]);
+
+  // Auto-scroll + auto-grow
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, typing]);
+  }, [msgs]);
 
-  // auto-grow du textarea pour garder une UX propre sur petit écran
   useEffect(() => {
     if (!areaRef.current) return;
     areaRef.current.style.height = "0px";
     areaRef.current.style.height = Math.min(areaRef.current.scrollHeight, 220) + "px";
   }, [input]);
 
-  const quitMatch = () => {
-    navigate("/end-match");
-  };
+  const quitMatch = () => navigate("/end-match");
 
-  const send = () => {
+  const send = async () => {
+    if (!input.trim() || !meId || !matchId) return;
     const text = input.trim();
-    if (!text) return;
-    const mine: Msg = { id: crypto.randomUUID(), from: "me", text, ts: Date.now() };
-    setMsgs((arr) => [...arr, mine]);
     setInput("");
-    setTyping(true);
-    setTimeout(() => {
-      const reply: Msg = {
-        id: crypto.randomUUID(),
-        from: "them",
-        text: "Ça te dit un vocal pour faire connaissance rapidement ? 🎙️",
-        ts: Date.now(),
-      };
-      setMsgs((arr) => [...arr, reply]);
-      setTyping(false);
-    }, 1200);
+
+    // Optimistic UI
+    const temp: Msg = { id: crypto.randomUUID(), from: "me", text, ts: Date.now() };
+    setMsgs((arr) => [...arr, temp]);
+
+    // Ecriture en base
+    const { error } = await supabase.from("match_messages").insert([
+      { match_id: matchId, sender_id: meId, text },
+    ]);
+
+    if (error) {
+      console.warn("[chat] insert message error:", error);
+      // (optionnel) rollback visuel si échec
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -131,10 +256,13 @@ export default function Chat() {
     }
   };
 
-  const formatTime = (t: number) => {
-    const d = new Date(t);
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  };
+  const formatTime = (t: number) =>
+    new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+  const title = useMemo(() => {
+    const ageText = otherAge != null ? `, ${otherAge}` : "";
+    return `${otherFirstName}${ageText}`;
+  }, [otherFirstName, otherAge]);
 
   return (
     <div className="app-safe phone-max" style={styles.screen}>
@@ -143,12 +271,18 @@ export default function Chat() {
         {/* centre : contact */}
         <div style={styles.contactWrap}>
           <div style={styles.avatar}>
-            <div style={{ ...styles.avatarPhoto, background: "linear-gradient(135deg,#FBD3E9,#BB377D)" }} />
-            <span style={{ ...styles.dot, background: contact.online ? "#4ADE80" : "#A3A3A3" }} />
+            <div
+              style={{
+                ...styles.avatarPhoto,
+                background: otherPhoto
+                  ? `url(${otherPhoto}) center/cover no-repeat`
+                  : "linear-gradient(135deg,#FBD3E9,#BB377D)",
+              }}
+            />
           </div>
           <div>
-            <div style={styles.contactName}>{contact.name}</div>
-            <div style={styles.contactStatus}>{contact.online ? "En ligne" : "Hors ligne"}</div>
+            <div style={styles.contactName}>{title}</div>
+            {/* statut supprimé */}
           </div>
         </div>
 
@@ -159,7 +293,10 @@ export default function Chat() {
             style={styles.iconBtn}
             title="Appel vocal"
             aria-label="Appel vocal"
-            onClick={() => navigate("/voice-call")}
+            onClick={() => {
+              if (!matchId || !meId || !otherId) return;
+              navigate("/voice-call", { state: { matchId, meId, otherId } });
+            }}
           >
             🎧
           </button>
@@ -169,7 +306,10 @@ export default function Chat() {
             style={styles.iconBtn}
             title="Voir profil"
             aria-label="Voir profil"
-            onClick={() => navigate("/profile-details")}
+            onClick={() => {
+              if (!otherId) return;
+              navigate("/profile-details", { state: { profileId: otherId } });
+            }}
           >
             <HeartsLogo />
           </button>
@@ -197,15 +337,6 @@ export default function Chat() {
             </div>
           </div>
         ))}
-
-        {typing && (
-          <div style={{ ...styles.row, justifyContent: "flex-start" }}>
-            <div style={{ ...styles.bubble, ...styles.theirs }}>
-              <Typing />
-            </div>
-          </div>
-        )}
-
         <div ref={bottomRef} />
       </main>
 
@@ -246,27 +377,6 @@ export default function Chat() {
   );
 }
 
-function Typing() {
-  const dot: React.CSSProperties = {
-    width: "clamp(5px, 0.9vw, 6px)",
-    height: "clamp(5px, 0.9vw, 6px)",
-    borderRadius: 999,
-    background: "rgba(255,255,255,0.9)",
-    display: "inline-block",
-    marginRight: 4,
-    animation: "blink 1.2s infinite",
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <span style={{ ...dot, animationDelay: "0ms" }} />
-      <span style={{ ...dot, animationDelay: "200ms" }} />
-      <span style={{ ...dot, animationDelay: "400ms" }} />
-      <style>{`@keyframes blink{0%{opacity:.2}50%{opacity:1}100%{opacity:.2}}`}</style>
-      <span style={{ fontSize: "clamp(10px, 2vw, 12px)", opacity: 0.9 }}>écrit…</span>
-    </div>
-  );
-}
-
 /* === Styles : responsive + clamp + safe areas === */
 const styles: Record<string, React.CSSProperties> = {
   screen: {
@@ -295,17 +405,7 @@ const styles: Record<string, React.CSSProperties> = {
   contactWrap: { display: "flex", alignItems: "center", gap: "clamp(8px, 1.8vw, 12px)", flex: 1 },
   avatar: { position: "relative" as const, width: "clamp(32px, 6vw, 40px)", height: "clamp(32px, 6vw, 40px)" },
   avatarPhoto: { width: "100%", height: "100%", borderRadius: "50%" },
-  dot: {
-    position: "absolute",
-    right: -2,
-    bottom: -2,
-    width: "clamp(8px, 1.8vw, 12px)",
-    height: "clamp(8px, 1.8vw, 12px)",
-    borderRadius: 999,
-    border: "2px solid #0B2A5A",
-  },
   contactName: { fontWeight: 800, letterSpacing: 0.2, fontSize: "clamp(14px, 3.6vw, 16px)" },
-  contactStatus: { fontSize: "clamp(11px, 2.8vw, 12px)", opacity: 0.8 },
 
   actions: { display: "flex", alignItems: "center", gap: "clamp(6px, 1.6vw, 10px)" },
   iconBtn: {
@@ -378,7 +478,7 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     width: "100%",
     resize: "none" as const,
-    overflow: "hidden", // ← enlève les flèches/scrollbars
+    overflow: "hidden",
     background: COLORS.inputBg,
     border: `1px solid ${COLORS.inputBorder}`,
     color: COLORS.text,

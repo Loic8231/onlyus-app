@@ -1,6 +1,8 @@
 // src/screens/VoiceCall.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+import { useCall } from "../hooks/useCall";
 
 const COLORS = {
   navy: "#0B2A5A",
@@ -14,33 +16,98 @@ const COLORS = {
   border: "rgba(255,255,255,0.18)",
 };
 
+function ageFromBirthdate(d?: string | null) {
+  if (!d) return undefined;
+  const b = new Date(d);
+  const t = new Date();
+  let a = t.getFullYear() - b.getFullYear();
+  const m = t.getMonth() - b.getMonth();
+  if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
+  return a;
+}
+
 export default function VoiceCall() {
   const navigate = useNavigate();
-  const contact = useMemo(() => ({ name: "Emma", age: 27 }), []);
-  const [connecting, setConnecting] = useState(true);
-  const [muted, setMuted] = useState(false);
-  const [speaker, setSpeaker] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const timerRef = useRef<number | null>(null);
+  const { state } = useLocation() as {
+    state?: { matchId?: string; meId?: string; otherId?: string };
+  };
+
+  const matchId = state?.matchId ?? null;
+  const meId = state?.meId ?? null;
+  const otherId = state?.otherId ?? null;
+
+  const [name, setName] = useState<string>("•");
+  const [age, setAge] = useState<number | undefined>(undefined);
+  const [photo, setPhoto] = useState<string | null>(null);
+
+  // Hook d’appel (WebRTC + Realtime)
+  const { state: call, streams, actions } = useCall({
+    matchId: matchId as string,
+    meId: meId as string,
+    otherId: otherId as string,
+  });
+
+  const localRef = useRef<HTMLAudioElement>(null);
+  const remoteRef = useRef<HTMLAudioElement>(null);
+
+  // Charge profil other
+  useEffect(() => {
+    (async () => {
+      if (!otherId) return;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name, birthdate, photo_url")
+        .eq("id", otherId)
+        .maybeSingle();
+      if (error) return;
+      setName(data?.first_name ?? "•");
+      setAge(ageFromBirthdate(data?.birthdate));
+      setPhoto(data?.photo_url ?? null);
+    })();
+  }, [otherId]);
+
+  // Branche les flux audio
+  useEffect(() => {
+    if (localRef.current && streams.local.current) {
+      localRef.current.srcObject = streams.local.current;
+      localRef.current.muted = true;
+      localRef.current.play().catch(() => {});
+    }
+  }, [streams.local.current]);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setConnecting(false);
-      timerRef.current = window.setInterval(() => setSeconds((s) => s + 1), 1000);
-    }, 1200);
-    return () => {
-      clearTimeout(t);
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
+    if (remoteRef.current && streams.remote.current) {
+      remoteRef.current.srcObject = streams.remote.current;
+      remoteRef.current.play().catch(() => {});
+    }
+  }, [streams.remote.current]);
 
-  const hangUp = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    navigate("/chat", { replace: true });
-  };
+  // Timer quand connecté
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    let int: number | null = null;
+    if (call.connected) {
+      int = window.setInterval(() => setSeconds((s) => s + 1), 1000);
+    } else {
+      setSeconds(0);
+    }
+    return () => {
+      if (int) clearInterval(int);
+    };
+  }, [call.connected]);
 
   const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
   const ss = String(seconds % 60).padStart(2, "0");
+
+  const hangUp = () => {
+    actions.hangup();
+    navigate("/chat", { replace: true });
+  };
+
+  // Si on arrive sans contexte suffisant, retourne au chat
+  useEffect(() => {
+    if (!matchId || !meId || !otherId) navigate("/chat", { replace: true });
+  }, [matchId, meId, otherId, navigate]);
 
   return (
     <div className="app-safe phone-max" style={styles.screen}>
@@ -48,72 +115,85 @@ export default function VoiceCall() {
       <main style={styles.wrap}>
         <div style={styles.card} aria-live="polite">
           <div style={styles.avatarWrap}>
-            <div style={styles.ring} className="ring" />
+            <div style={styles.ring} className={call.connected ? "" : "ring"} />
             <div
               style={{
                 ...styles.avatar,
-                background: "linear-gradient(135deg,#FBD3E9,#BB377D)",
+                background: photo
+                  ? `url(${photo}) center/cover no-repeat`
+                  : "linear-gradient(135deg,#FBD3E9,#BB377D)",
               }}
-              aria-label={`${contact.name}, ${contact.age} ans`}
+              aria-label={`${name}${age != null ? `, ${age} ans` : ""}`}
             />
           </div>
 
           <h2 style={styles.name}>
-            {contact.name}, {contact.age}
+            {name}{age != null ? `, ${age}` : ""}
           </h2>
           <div style={styles.status}>
-            {connecting ? "Connexion…" : `${mm}:${ss}`}
+            {call.connected ? `${mm}:${ss}` : call.ringing ? "Appel en cours…" : call.incoming ? "Appel entrant…" : "Connexion…"}
           </div>
+
+          <audio ref={localRef} autoPlay playsInline />
+          <audio ref={remoteRef} autoPlay playsInline />
 
           <div style={styles.controls}>
-            <button
-              onClick={() => setMuted((v) => !v)}
-              style={{
-                ...styles.ctrlBtn,
-                borderColor: muted ? "transparent" : COLORS.border,
-                background: muted
-                  ? COLORS.coral
-                  : `linear-gradient(180deg, ${COLORS.glassTop}, ${COLORS.glassBottom})`,
-              }}
-              title={muted ? "Activer le micro" : "Couper le micro"}
-              aria-pressed={muted}
-              aria-label={muted ? "Activer le micro" : "Couper le micro"}
-            >
-              {muted ? "🎙️✖︎" : "🎙️"}
-            </button>
+            {!call.connected && !call.incoming && (
+              <button
+                onClick={actions.call}
+                style={{ ...styles.ctrlBtn, background: COLORS.coral, borderColor: "transparent" }}
+                title="Appeler"
+                aria-label="Appeler"
+              >
+                📞
+              </button>
+            )}
 
-            <button
-              onClick={() => setSpeaker((v) => !v)}
-              style={{
-                ...styles.ctrlBtn,
-                borderColor: speaker ? "transparent" : COLORS.border,
-                background: speaker
-                  ? COLORS.coral
-                  : `linear-gradient(180deg, ${COLORS.glassTop}, ${COLORS.glassBottom})`,
-              }}
-              title={speaker ? "Désactiver haut-parleur" : "Activer haut-parleur"}
-              aria-pressed={speaker}
-              aria-label={speaker ? "Désactiver haut-parleur" : "Activer haut-parleur"}
-            >
-              🔊
-            </button>
+            {call.incoming && !call.connected && (
+              <>
+                <button
+                  onClick={actions.accept}
+                  style={{ ...styles.ctrlBtn, background: COLORS.coral, borderColor: "transparent" }}
+                  title="Accepter"
+                  aria-label="Accepter"
+                >
+                  ✅
+                </button>
+                <button
+                  onClick={actions.reject}
+                  style={{ ...styles.ctrlBtn, background: "#E84545", borderColor: "transparent" }}
+                  title="Refuser"
+                  aria-label="Refuser"
+                >
+                  ❌
+                </button>
+              </>
+            )}
 
-            <button
-              onClick={hangUp}
-              style={{ ...styles.ctrlBtn, background: "#E84545", borderColor: "transparent" }}
-              title="Raccrocher"
-              aria-label="Raccrocher"
-            >
-              ⛔
-            </button>
+            {call.connected && (
+              <button
+                onClick={hangUp}
+                style={{ ...styles.ctrlBtn, background: "#E84545", borderColor: "transparent" }}
+                title="Raccrocher"
+                aria-label="Raccrocher"
+              >
+                ⛔
+              </button>
+            )}
           </div>
+
+          {call.error && (
+            <div style={{ marginTop: 6, opacity: 0.9 }}>
+              Erreur : {call.error}
+            </div>
+          )}
         </div>
       </main>
 
       <div style={styles.homeIndicator} />
 
       <style>{`
-  .ring { animation: pulse 1.8s ease-in-out ${connecting ? "infinite" : "none"}; }
+  .ring { animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse {
     0% { transform: scale(1); opacity: 0.5; }
     50% { transform: scale(1.06); opacity: 1; }
@@ -123,7 +203,6 @@ export default function VoiceCall() {
     .ring { animation: none !important; }
   }
 `}</style>
-
     </div>
   );
 }
@@ -211,4 +290,3 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: "clamp(8px, 1.6vw, 12px)",
   },
 };
-
