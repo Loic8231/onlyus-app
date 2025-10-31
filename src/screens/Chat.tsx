@@ -63,6 +63,8 @@ function ageFromBirthdate(d?: string | null) {
   return a;
 }
 
+const DEFAULT_END_MSG = "Je préfère qu'on en reste là, bon courage pour la suite.";
+
 export default function Chat() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -172,9 +174,9 @@ export default function Chat() {
             },
           ]);
         }
-      );
+      )
+      .subscribe();
 
-    channel.subscribe();
     return () => {
       channel.unsubscribe();
       mounted = false;
@@ -190,19 +192,18 @@ export default function Chat() {
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*", // couvre INSERT (ou UPSERT/UPDATE si tu modifies la RPC plus tard)
           schema: "public",
           table: "match_endings",
           filter: `match_id=eq.${matchId}`,
         },
         (payload) => {
           const row = payload.new as any;
-          // on redirige que le destinataire
+          if (!row) return;
+          // on redirige uniquement le destinataire
           if (row.recipient_id === meId) {
-            navigate("/match-closed", {
-              replace: true,
-              state: { message: row.message },
-            });
+            const message = row.message || DEFAULT_END_MSG;
+            navigate("/match-closed", { replace: true, state: { message } });
           }
         }
       )
@@ -224,7 +225,10 @@ export default function Chat() {
     areaRef.current.style.height = Math.min(areaRef.current.scrollHeight, 220) + "px";
   }, [input]);
 
-  const quitMatch = () => navigate("/end-match");
+  const quitMatch = () => {
+    if (!matchId) return;
+    navigate("/end-match", { state: { matchId } });
+  };
 
   const send = async () => {
     if (!input.trim() || !meId || !matchId) return;
@@ -501,6 +505,3 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
 };
-
-
-

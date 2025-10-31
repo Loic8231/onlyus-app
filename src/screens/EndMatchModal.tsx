@@ -1,5 +1,5 @@
 // src/screens/EndMatchModal.tsx
-import React from "react";
+import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 
@@ -15,31 +15,42 @@ const COLORS = {
 
 type NavState = { matchId?: string };
 
+const DEFAULT_MSG =
+  "Je préfère qu'on en reste là, bon courage pour la suite.";
+
 export default function EndMatchModal() {
   const navigate = useNavigate();
-  const { state } = useLocation();
-  const { matchId } = (state || {}) as NavState;
+  const location = useLocation() as { state?: NavState };
+  const matchId = location.state?.matchId;
+  const [isSending, setIsSending] = useState(false);
 
   const handleCancel = () => {
     navigate("/chat");
   };
 
   const handleConfirm = async () => {
-    const msg = "Je préfère qu'on en reste là, bon courage pour la suite.";
+    if (isSending) return;
+    setIsSending(true);
+
     if (!matchId) {
-      // fallback si pas d'ID : retourne juste à match-ended
+      console.warn("[end-match] matchId manquant (fallback)");
       navigate("/match-ended");
       return;
     }
-    const { error } = await supabase.rpc("end_match", {
-      p_match_id: matchId,
-      p_message: msg,
-    });
-    if (error) {
-      console.warn("[end_match] error:", error);
-      // on continue malgré tout côté UX
+
+    try {
+      const { error } = await supabase.rpc("end_match", {
+        p_match_id: matchId,
+        p_message: DEFAULT_MSG,
+      });
+      if (error) {
+        console.error("[end_match] error:", error);
+        // on laisse quand même partir l'utilisateur pour l'UX
+      }
+      navigate("/match-ended", { replace: true });
+    } finally {
+      setIsSending(false);
     }
-    navigate("/match-ended", { replace: true });
   };
 
   return (
@@ -54,15 +65,37 @@ export default function EndMatchModal() {
           aria-describedby="end-desc"
         >
           <h2 id="end-title" style={styles.title}>Quitter ce match</h2>
-          <p id="end-desc" style={styles.text}>Voulez-vous mettre fin à ce match ?</p>
+
+          <p id="end-desc" style={styles.text}>
+            Voulez-vous mettre fin à ce match ?
+          </p>
+
           <p style={styles.subtext}>Cela enverra le message suivant :</p>
+
           <blockquote style={styles.quote}>
-            « Je préfère qu'on en reste là, bon courage pour la suite. »
+            « {DEFAULT_MSG} »
           </blockquote>
 
           <div style={styles.actions}>
-            <button style={styles.btnGhost} onClick={handleCancel}>Annuler</button>
-            <button style={styles.btnPrimary} onClick={handleConfirm}>Envoyer</button>
+            <button
+              style={styles.btnGhost}
+              onClick={handleCancel}
+              disabled={isSending}
+            >
+              Annuler
+            </button>
+
+            <button
+              style={{
+                ...styles.btnPrimary,
+                opacity: isSending ? 0.75 : 1,
+                cursor: isSending ? "wait" : "pointer",
+              }}
+              onClick={handleConfirm}
+              disabled={isSending}
+            >
+              {isSending ? "Envoi…" : "Envoyer"}
+            </button>
           </div>
         </div>
       </div>
@@ -122,4 +155,3 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 12px 26px rgba(255,107,107,0.35)", cursor: "pointer",
   },
 };
-
