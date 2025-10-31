@@ -199,7 +199,7 @@ export default function Chat() {
           const row = payload.new as any;
           // on redirige que le destinataire
           if (row.recipient_id === meId) {
-            navigate("/match-closed-notice", {
+            navigate("/match-closed", {
               replace: true,
               state: { message: row.message },
             });
