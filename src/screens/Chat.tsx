@@ -181,6 +181,37 @@ export default function Chat() {
     };
   }, [matchId, meId]);
 
+  // 5) écoute de fin de match → redirige vers /match-closed
+  useEffect(() => {
+    if (!matchId || !meId) return;
+
+    const ch = supabase
+      .channel(`end:${matchId}:${meId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "match_endings",
+          filter: `match_id=eq.${matchId}`,
+        },
+        (payload) => {
+          const row = payload.new as any;
+          if (row.recipient_id === meId) {
+            navigate("/match-closed", {
+              replace: true,
+              state: { message: row.message },
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      ch.unsubscribe();
+    };
+  }, [matchId, meId, navigate]);
+
   // scroll + auto-grow
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -469,5 +500,6 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
 };
+
 
 

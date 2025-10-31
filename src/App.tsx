@@ -26,6 +26,7 @@ import UserProfile from "./screens/UserProfile";
 
 import EndMatchModal from "./screens/EndMatchModal";
 import MatchEnded from "./screens/MatchEnded";
+import MatchClosedNotice from "./screens/MatchClosedNotice";
 
 import VoiceCall from "./screens/VoiceCall";
 
@@ -259,6 +260,14 @@ export default function App() {
                 <ProtectedRoute>
                   <EndMatchModal />
                 </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/match-closed"
+              element={
+               <ProtectedRoute>
+                 <MatchClosedNotice />
+               </ProtectedRoute>
               }
             />
             <Route
