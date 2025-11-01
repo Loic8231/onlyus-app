@@ -1,5 +1,5 @@
 // src/screens/EndMatchModal.tsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 
@@ -15,41 +15,61 @@ const COLORS = {
 
 type NavState = { matchId?: string };
 
-const DEFAULT_MSG =
-  "Je préfère qu'on en reste là, bon courage pour la suite.";
-
 export default function EndMatchModal() {
   const navigate = useNavigate();
-  const location = useLocation() as { state?: NavState };
-  const matchId = location.state?.matchId;
-  const [isSending, setIsSending] = useState(false);
+  const { state } = useLocation();
+  const { matchId: matchIdFromNav } = (state || {}) as NavState;
 
-  const handleCancel = () => {
-    navigate("/chat");
-  };
+  const [matchId, setMatchId] = useState<string | null>(matchIdFromNav ?? null);
+  const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  // Sécurise: si matchId non fourni par la nav, on tente de récupérer le dernier match actif
+  useEffect(() => {
+    (async () => {
+      if (matchId) return;
+      const { data: auth } = await supabase.auth.getUser();
+      const meId = auth?.user?.id;
+      if (!meId) return;
+      const { data: row, error } = await supabase
+        .from("match_participants")
+        .select("match_id")
+        .eq("user_id", meId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && row?.match_id) setMatchId(row.match_id);
+    })();
+  }, [matchId]);
+
+  const handleCancel = () => navigate("/chat");
 
   const handleConfirm = async () => {
-    if (isSending) return;
-    setIsSending(true);
-
+    setErrMsg(null);
+    const msg = "Je préfère qu'on en reste là, bon courage pour la suite.";
     if (!matchId) {
-      console.warn("[end-match] matchId manquant (fallback)");
+      // si on ne peut pas déterminer le match → fallback UX
       navigate("/match-ended");
       return;
     }
-
+    setLoading(true);
     try {
       const { error } = await supabase.rpc("end_match", {
         p_match_id: matchId,
-        p_message: DEFAULT_MSG,
+        p_message: msg,
       });
       if (error) {
-        console.error("[end_match] error:", error);
-        // on laisse quand même partir l'utilisateur pour l'UX
+        console.warn("[end_match] error:", error);
+        setErrMsg(error.message ?? "Erreur inconnue");
+        // on n’arrête pas l’UX, mais on informe
       }
-      navigate("/match-ended", { replace: true });
+    } catch (e: any) {
+      console.warn("[end_match] threw:", e);
+      setErrMsg(e?.message ?? String(e));
     } finally {
-      setIsSending(false);
+      setLoading(false);
+      // côté « auteur », on va sur la confirmation
+      navigate("/match-ended", { replace: true });
     }
   };
 
@@ -65,36 +85,36 @@ export default function EndMatchModal() {
           aria-describedby="end-desc"
         >
           <h2 id="end-title" style={styles.title}>Quitter ce match</h2>
-
           <p id="end-desc" style={styles.text}>
             Voulez-vous mettre fin à ce match ?
           </p>
 
           <p style={styles.subtext}>Cela enverra le message suivant :</p>
-
           <blockquote style={styles.quote}>
-            « {DEFAULT_MSG} »
+            « Je préfère qu'on en reste là, bon courage pour la suite. »
           </blockquote>
+
+          {errMsg && (
+            <div style={styles.error}>
+              ⚠️ {errMsg}
+            </div>
+          )}
 
           <div style={styles.actions}>
             <button
-              style={styles.btnGhost}
+              style={{ ...styles.btnGhost, opacity: loading ? 0.6 : 1 }}
               onClick={handleCancel}
-              disabled={isSending}
+              disabled={loading}
             >
               Annuler
             </button>
 
             <button
-              style={{
-                ...styles.btnPrimary,
-                opacity: isSending ? 0.75 : 1,
-                cursor: isSending ? "wait" : "pointer",
-              }}
+              style={{ ...styles.btnPrimary, opacity: matchId ? 1 : 0.6, cursor: matchId ? "pointer" : "not-allowed" }}
               onClick={handleConfirm}
-              disabled={isSending}
+              disabled={!matchId || loading}
             >
-              {isSending ? "Envoi…" : "Envoyer"}
+              {loading ? "…" : "Envoyer"}
             </button>
           </div>
         </div>
@@ -103,7 +123,7 @@ export default function EndMatchModal() {
   );
 }
 
-/* styles inchangés */
+/* Styles */
 const styles: Record<string, React.CSSProperties> = {
   screen: {
     minHeight: "100svh",
@@ -114,7 +134,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   pageBg: { position: "absolute", inset: 0 },
   overlay: {
-    position: "fixed", inset: 0, display: "grid", placeItems: "center",
+    position: "fixed",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
     padding: "clamp(12px, 3vw, 24px)",
     paddingBottom: "max(clamp(12px,3vw,24px), env(safe-area-inset-bottom, 12px))",
     background: "linear-gradient(180deg, rgba(10,20,50,0.10), rgba(10,20,50,0.10))",
@@ -138,6 +161,14 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${COLORS.border}`,
     background: "rgba(255,255,255,0.04)",
     fontSize: "clamp(14px, 3.6vw, 18px)",
+  },
+  error: {
+    margin: "8px 0 0",
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: `1px solid ${COLORS.border}`,
+    background: "rgba(255,80,80,0.15)",
+    fontSize: "clamp(12px,3.2vw,14px)",
   },
   actions: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "clamp(10px, 2vw, 14px)", marginTop: "clamp(4px, 1vw, 8px)" },
   btnGhost: {
