@@ -70,7 +70,6 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  // ✅ ordre correct: atan2(√a, √(1-a))
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
@@ -225,7 +224,7 @@ export default function Discover() {
     setItems((prev) => prev.filter((p) => p.id !== profile.id));
   };
 
-  // ❤️ Liker un profil (RPC like_profile, sans fallback)
+  // ❤️ Liker un profil (RPC like_profile **à 2 paramètres**)
   const like = async () => {
     if (!profile || isLiking) return;
     setIsLiking(true);
@@ -244,13 +243,25 @@ export default function Discover() {
 
     let matchId: string | null = null;
 
+    // ⬇️ IMPORTANT : 2 paramètres pour lever l’ambiguïté (PGRST203)
     const { data: lpData, error: lpError } = await supabase.rpc("like_profile", {
+      p_actor_id: userId,
       p_target_id: profile.id,
     });
+
     if (lpError) {
       console.error("[discover] like_profile error:", lpError);
     } else {
       console.log("[discover] like_profile ok:", lpData);
+      // Tolérant sur le format de retour : {match_id} | [{match_id}] | null
+      const raw: any = lpData;
+      if (Array.isArray(raw) && raw.length > 0) {
+        matchId = raw[0]?.match_id ?? null;
+      } else if (raw && typeof raw === "object") {
+        matchId = raw.match_id ?? null;
+      } else {
+        matchId = null;
+      }
     }
 
     if (matchId) {
@@ -547,3 +558,4 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
+
