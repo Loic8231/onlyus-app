@@ -1,6 +1,8 @@
 // src/screens/SettingsHome.tsx
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+import { useActiveMatch } from "../hooks/useActiveMatch";
 
 const COLORS = {
   navy: "#0B2A5A",
@@ -37,8 +39,24 @@ function Row({
 export default function SettingsHome() {
   const navigate = useNavigate();
 
+  // 🔑 Récupère l'id de l'utilisateur + status de match actif
+  const [userId, setUserId] = useState<string | null>(null);
+  const hasActiveMatch = useActiveMatch(userId);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      setUserId(data.user?.id ?? null);
+    })();
+  }, []);
+
+  // ⬅️ Retour intelligent
   const goBack = () => {
-    navigate("/discover"); // ⬅️ renvoie toujours vers Discover
+    if (hasActiveMatch === true) {
+      navigate("/chat", { replace: true });
+    } else {
+      navigate("/discover", { replace: true });
+    }
   };
 
   return (

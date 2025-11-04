@@ -125,35 +125,38 @@ export default function Discover() {
         return;
       }
 
-      // 2) Tentative RPC (si dispo)
-      let mapped: CardProfile[] | null = null;
-      try {
-        const { data, error } = await supabase.rpc("find_nearby_profiles", {
-          p_user_id: userId,
-          p_lat: myLat,
-          p_lon: myLon,
-          p_radius_km: radius,
-          p_limit: 30,
-        });
+      // 2) Appel unique : tout est géré en SQL (distance, âge, genres, exclusions)
+let mapped: CardProfile[] | null = null;
 
-        if (error) {
-          console.info("[discover] find_nearby_profiles not used:", error.message);
-        } else if (Array.isArray(data) && data.length > 0) {
-          const rows = (data as NearbyRow[]) || [];
-          mapped = rows.map((r) => ({
-            id: r.id,
-            name: r.first_name ?? "—",
-            age: ageFromBirthdate(r.birthdate),
-            city: r.city ?? "—",
-            bio: r.bio ?? "",
-            interests: r.interests ?? [],
-            photoUrl: r.photo_url ?? null,
-            distance_km: r.distance_km ?? null,
-          }));
-        }
-      } catch (e) {
-        console.info("[discover] find_nearby_profiles threw (ignored):", e);
-      }
+try {
+  const { data, error } = await supabase.rpc("get_discover_candidates", {
+    p_user_id: userId,
+    p_limit: 30,
+  });
+
+  if (error) {
+    console.error("[discover] get_discover_candidates error:", error);
+  } else if (Array.isArray(data)) {
+    mapped = data.map((r: any) => ({
+      id: r.id,
+      name: r.first_name ?? "—",
+      age: ageFromBirthdate(r.birthdate),
+      city: r.city ?? "—",
+      bio: r.bio ?? "",
+      interests: (r.interests ?? []) as string[],
+      photoUrl: r.photo_url ?? null,
+      distance_km: r.distance_km ?? null,
+    }));
+  }
+} catch (e) {
+  console.error("[discover] get_discover_candidates threw:", e);
+}
+
+// Si aucun résultat (ou erreur), on met une liste vide
+if (!mapped) mapped = [];
+setItems(mapped);
+setLoading(false);
+
 
       // 3) Fallback sans RPC : select + filtre JS par distance
       if (!mapped) {
