@@ -111,9 +111,6 @@ export default function UserProfileScreen() {
   const [row, setRow] = useState<ProfileRow | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Pour le retour intelligent
-  const [hasActiveMatch, setHasActiveMatch] = useState(false);
-
   // distance stockée dans profile_preferences
   const [distanceKm, setDistanceKm] = useState<number | null>(null);
 
@@ -154,17 +151,6 @@ export default function UserProfileScreen() {
           .eq("user_id", userId)
           .maybeSingle(),
       ]);
-
-      // Vérifie s’il existe un match actif
-      const { data: active } = await supabase
-        .from("matches")
-        .select("id")
-        .or(`user1.eq.${userId},user2.eq.${userId}`)
-        .eq("active", true)
-        .limit(1)
-        .maybeSingle();
-
-      setHasActiveMatch(!!active?.id);
 
       const r = (pData as ProfileRow) ?? null;
       setRow(r);
@@ -336,10 +322,9 @@ export default function UserProfileScreen() {
     return { gText, ageText, distText };
   }, [row?.preferred_genders, row?.preferred_min_age, row?.preferred_max_age, distanceKm]);
 
-  /** ---------- retour intelligent (avec replace) ---------- */
-  const handleSmartBack = () => {
-    if (hasActiveMatch) navigate("/chat", { replace: true });
-    else navigate("/discover", { replace: true });
+  /** ---------- Retour : toujours vers SettingsHome ---------- */
+  const handleBack = () => {
+    navigate("/settings", { replace: true });
   };
 
   if (loading) {
@@ -352,7 +337,7 @@ export default function UserProfileScreen() {
       <header style={headerStyle}>
         <button
           aria-label="Retour"
-          onClick={handleSmartBack}
+          onClick={handleBack}
           style={{ background: "transparent", border: "none", cursor: "pointer" }}
         >
           <BackIcon />
