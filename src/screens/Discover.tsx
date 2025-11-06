@@ -82,7 +82,28 @@ export default function Discover() {
   const [isLiking, setIsLiking] = useState(false);
   const navigate = useNavigate();
 
-  // 🔹 Chargement des profils proches
+  // 🔒 Strict: si j'ai un match actif, je ne peux pas utiliser Discover.
+  async function hasActiveMatch(uid: string): Promise<boolean> {
+    // Essai 1: colonnes user1/user2
+    const q1 = await supabase
+      .from("matches")
+      .select("id", { count: "exact", head: true })
+      .eq("active", true)
+      .or(`user1.eq.${uid},user2.eq.${uid}`);
+    if (!q1.error && (q1.count ?? 0) > 0) return true;
+
+    // Essai 2: colonnes user1_id/user2_id (fallback)
+    const q2 = await supabase
+      .from("matches")
+      .select("id", { count: "exact", head: true })
+      .eq("active", true)
+      .or(`user1_id.eq.${uid},user2_id.eq.${uid}`);
+    if (!q2.error && (q2.count ?? 0) > 0) return true;
+
+    return false;
+  }
+
+  // 🔹 Chargement des profils proches (ou redirection si match actif)
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -93,6 +114,15 @@ export default function Discover() {
       if (!userId) {
         setItems([]);
         setLoading(false);
+        return;
+      }
+
+      // ✅ Strict gate: empêche l’accès à Discover si match actif
+      const active = await hasActiveMatch(userId);
+      if (active) {
+        setItems([]);
+        setLoading(false);
+        navigate("/chat", { replace: true });
         return;
       }
 
@@ -125,40 +155,34 @@ export default function Discover() {
         return;
       }
 
-      // 2) Appel unique : tout est géré en SQL (distance, âge, genres, exclusions)
-let mapped: CardProfile[] | null = null;
+      // 2) Appel unique : tout est géré en SQL (distance, âge, genres, exclusions, invisibilité des utilisateurs déjà en match actif)
+      let mapped: CardProfile[] | null = null;
 
-try {
-  const { data, error } = await supabase.rpc("get_discover_candidates", {
-    p_user_id: userId,
-    p_limit: 30,
-  });
+      try {
+        const { data, error } = await supabase.rpc("get_discover_candidates", {
+          p_user_id: userId,
+          p_limit: 30,
+        });
 
-  if (error) {
-    console.error("[discover] get_discover_candidates error:", error);
-  } else if (Array.isArray(data)) {
-    mapped = data.map((r: any) => ({
-      id: r.id,
-      name: r.first_name ?? "—",
-      age: ageFromBirthdate(r.birthdate),
-      city: r.city ?? "—",
-      bio: r.bio ?? "",
-      interests: (r.interests ?? []) as string[],
-      photoUrl: r.photo_url ?? null,
-      distance_km: r.distance_km ?? null,
-    }));
-  }
-} catch (e) {
-  console.error("[discover] get_discover_candidates threw:", e);
-}
+        if (error) {
+          console.error("[discover] get_discover_candidates error:", error);
+        } else if (Array.isArray(data)) {
+          mapped = data.map((r: any) => ({
+            id: r.id,
+            name: r.first_name ?? "—",
+            age: ageFromBirthdate(r.birthdate),
+            city: r.city ?? "—",
+            bio: r.bio ?? "",
+            interests: (r.interests ?? []) as string[],
+            photoUrl: r.photo_url ?? null,
+            distance_km: r.distance_km ?? null,
+          }));
+        }
+      } catch (e) {
+        console.error("[discover] get_discover_candidates threw:", e);
+      }
 
-// Si aucun résultat (ou erreur), on met une liste vide
-if (!mapped) mapped = [];
-setItems(mapped);
-setLoading(false);
-
-
-      // 3) Fallback sans RPC : select + filtre JS par distance
+      // Si aucun résultat (ou erreur), on tente un fallback distance-only
       if (!mapped) {
         const { data: raw, error: selErr } = await supabase
           .from("profiles")
@@ -201,10 +225,10 @@ setLoading(false);
         }));
       }
 
-      setItems(mapped);
+      setItems(mapped ?? []);
       setLoading(false);
     })();
-  }, []);
+  }, [navigate]);
 
   const profile = useMemo(
     () => (items.length > 0 ? items[index % items.length] : null),
@@ -561,4 +585,5 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
+
 
