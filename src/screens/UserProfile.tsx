@@ -59,6 +59,10 @@ type ProfileRow = {
   preferred_genders: string[] | null;
   preferred_min_age: number | null;
   preferred_max_age: number | null;
+  city_lat: number | null;
+  city_lng: number | null;
+  lat: number | null;
+  lng: number | null;
 };
 
 function ageFromBirthdate(d?: string | null) {
@@ -124,6 +128,7 @@ export default function UserProfileScreen() {
   // autosave
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const debounceRef = useRef<number | null>(null);
+  const geoRef = useRef<number | null>(null); // pour débouncer le géocodage
 
   // inputs fichiers
   const fileInputsRef = useRef<(HTMLInputElement | null)[]>([]);
@@ -141,7 +146,8 @@ export default function UserProfileScreen() {
           .from("profiles")
           .select(`
             id, first_name, birthdate, photo_url, city, bio, interests, gallery_urls,
-            preferred_genders, preferred_min_age, preferred_max_age
+            preferred_genders, preferred_min_age, preferred_max_age,
+            city_lat, city_lng, lat, lng
           `)
           .eq("id", userId)
           .maybeSingle(),
@@ -193,6 +199,74 @@ export default function UserProfileScreen() {
     debounceRef.current = window.setTimeout(() => {
       persist(partial);
     }, delay) as unknown as number;
+  };
+
+  /** ---------- Géocodage ville → city_lat / city_lng (OSM Nominatim) ---------- */
+  async function geocodeCity(city: string): Promise<{ lat: number; lon: number } | null> {
+    if (!city || city.trim().length < 2) return null;
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(city)}`;
+      const res = await fetch(url, {
+        headers: {
+          // Bonnes pratiques Nominatim : fournir un User-Agent descriptif
+          "User-Agent": "onlyus.app/1.0 (contact@only-us.fr)",
+          "Accept": "application/json",
+        },
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (!Array.isArray(json) || json.length === 0) return null;
+      const lat = parseFloat(json[0].lat);
+      const lon = parseFloat(json[0].lon);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+      return null;
+    } catch (e) {
+      console.warn("[geocodeCity]", e);
+      return null;
+    }
+  }
+
+  // Quand la ville change → on persiste la ville et (si trouvé) city_lat/city_lng
+  useEffect(() => {
+    if (!row?.id) return;
+    // Debounce léger pour éviter d'appeler l'API à chaque frappe
+    if (geoRef.current) window.clearTimeout(geoRef.current);
+    geoRef.current = window.setTimeout(async () => {
+      const city = (cityDraft || "").trim();
+      // On persiste toujours la ville, même si pas de coordonnées
+      if (city === "") {
+        scheduleSave({ city: null, city_lat: null, city_lng: null }, 0);
+        return;
+      }
+      const geo = await geocodeCity(city);
+      if (geo) {
+        // maj city + city_lat/lng
+        persist({ city, city_lat: geo.lat, city_lng: geo.lon });
+      } else {
+        // si pas trouvé, au moins la ville
+        persist({ city });
+      }
+    }, 600) as unknown as number;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityDraft, row?.id]);
+
+  /** ---------- GPS → lat / lng (position précise) ---------- */
+  const setGpsLocation = () => {
+    if (!("geolocation" in navigator)) {
+      alert("La géolocalisation n’est pas disponible sur cet appareil.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        persist({ lat: latitude, lng: longitude });
+      },
+      (err) => {
+        console.warn(err);
+        alert("Impossible de récupérer la position GPS.");
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
   };
 
   /** ---------- intérêts ---------- */
@@ -285,48 +359,6 @@ export default function UserProfileScreen() {
     if (fileInputsRef.current[idx]) fileInputsRef.current[idx]!.value = "";
   };
 
-  /** ---------- autosave ville/bio ---------- */
-  useEffect(() => {
-    if (!row?.id) return;
-    scheduleSave({ city: cityDraft || null });
-  }, [cityDraft]); // eslint-disable-line
-
-  useEffect(() => {
-    if (!row?.id) return;
-    scheduleSave({ bio: bioDraft || null });
-  }, [bioDraft]); // eslint-disable-line
-
-  /** ---------- résumé des préférences ---------- */
-  const prefSummary = useMemo(() => {
-    const g = row?.preferred_genders ?? [];
-    const ageMin = row?.preferred_min_age ?? undefined;
-    const ageMax = row?.preferred_max_age ?? undefined;
-    const dist = distanceKm ?? undefined;
-
-    const labelMap: Record<string, string> = {
-      homme: "Homme",
-      femme: "Femme",
-      "non-binaire": "Non-binaire",
-      "ne-pas-dire": "Ne pas dire",
-    };
-    const gText =
-      g.length === 0
-        ? "—"
-        : g.every((v) => ["homme", "femme", "non-binaire", "ne-pas-dire"].includes(v)) && g.length >= 4
-        ? "Tout le monde"
-        : g.map((x) => labelMap[x] || x).join(", ");
-
-    const ageText = ageMin && ageMax ? `${ageMin}–${ageMax} ans` : "—";
-    const distText = dist ? `${dist} km` : "—";
-
-    return { gText, ageText, distText };
-  }, [row?.preferred_genders, row?.preferred_min_age, row?.preferred_max_age, distanceKm]);
-
-  /** ---------- Retour : toujours vers SettingsHome ---------- */
-  const handleBack = () => {
-    navigate("/settings", { replace: true });
-  };
-
   if (loading) {
     return <div style={{ color: "#fff", padding: 20 }}>Chargement…</div>;
   }
@@ -337,7 +369,7 @@ export default function UserProfileScreen() {
       <header style={headerStyle}>
         <button
           aria-label="Retour"
-          onClick={handleBack}
+          onClick={() => navigate("/settings", { replace: true })}
           style={{ background: "transparent", border: "none", cursor: "pointer" }}
         >
           <BackIcon />
@@ -427,9 +459,34 @@ export default function UserProfileScreen() {
                 </h1>
               </div>
 
-              {/* Ville */}
+              {/* Ville + GPS */}
               <div style={{ color: COLORS.text, marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <input value={cityDraft} onChange={(e) => setCityDraft(e.target.value)} placeholder="Ville" style={{ ...textInputStyle, minWidth: 180 }} />
+                <input
+                  value={cityDraft}
+                  onChange={(e) => setCityDraft(e.target.value)}
+                  placeholder="Ville (ex: Lyon, France)"
+                  style={{ ...textInputStyle, minWidth: 220 }}
+                />
+                <button
+                  onClick={setGpsLocation}
+                  title="Utiliser ma position précise (GPS)"
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 12,
+                    border: `1px solid ${COLORS.border}`,
+                    background: `linear-gradient(180deg, ${COLORS.glassTop}, ${COLORS.glassBottom})`,
+                    color: COLORS.white,
+                    cursor: "pointer",
+                  }}
+                >
+                  📍 Ma position
+                </button>
+              </div>
+
+              {/* Lecture rapide des coords actuelles */}
+              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
+                <div>Ville: <code>{row?.city || "—"}</code> • city_lat/lng: <code>{row?.city_lat ?? "—"}</code> / <code>{row?.city_lng ?? "—"}</code></div>
+                <div>GPS: <code>{row?.lat ?? "—"}</code> / <code>{row?.lng ?? "—"}</code></div>
               </div>
             </div>
           </div>
@@ -456,13 +513,21 @@ export default function UserProfileScreen() {
           </div>
           <div style={{ color: COLORS.text, display: "grid", gap: 6 }}>
             <div>
-              <strong>Genre voulu :</strong> {prefSummary.gText}
+              <strong>Genre voulu :</strong>{" "}
+              {(() => {
+                const g = row?.preferred_genders ?? [];
+                const map: Record<string, string> = { homme: "Homme", femme: "Femme", "non-binaire": "Non-binaire", "ne-pas-dire": "Ne pas dire" };
+                if (g.length === 0) return "—";
+                if (g.every((v) => ["homme", "femme", "non-binaire", "ne-pas-dire"].includes(v)) && g.length >= 4) return "Tout le monde";
+                return g.map((x) => map[x] || x).join(", ");
+              })()}
             </div>
             <div>
-              <strong>Âge :</strong> {prefSummary.ageText}
+              <strong>Âge :</strong>{" "}
+              {row?.preferred_min_age && row?.preferred_max_age ? `${row.preferred_min_age}–${row.preferred_max_age} ans` : "—"}
             </div>
             <div>
-              <strong>Distance max :</strong> {prefSummary.distText}
+              <strong>Distance max :</strong> {typeof distanceKm === "number" ? `${distanceKm} km` : "—"}
             </div>
           </div>
         </section>
@@ -678,3 +743,5 @@ export default function UserProfileScreen() {
     </div>
   );
 }
+
+

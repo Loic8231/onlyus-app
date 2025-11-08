@@ -15,31 +15,6 @@ const COLORS = {
   border: "rgba(255,255,255,0.18)",
 };
 
-type NearbyRow = {
-  id: string;
-  first_name: string | null;
-  birthdate: string | null;
-  city: string | null;
-  bio: string | null;
-  interests: string[] | null;
-  photo_url: string | null;
-  distance_km?: number | null;
-};
-
-type RawProfile = {
-  id: string;
-  first_name: string | null;
-  birthdate: string | null;
-  city: string | null;
-  bio: string | null;
-  interests: string[] | null;
-  photo_url: string | null;
-  lat: number | null;
-  lng: number | null;
-  city_lat: number | null;
-  city_lng: number | null;
-};
-
 type CardProfile = {
   id: string;
   name: string;
@@ -61,18 +36,6 @@ function ageFromBirthdate(d?: string | null) {
   return a;
 }
 
-// Haversine (km)
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371;
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
-
 export default function Discover() {
   const [index, setIndex] = useState(0);
   const [showInfo, setShowInfo] = useState(false);
@@ -92,7 +55,7 @@ export default function Discover() {
       .or(`user1.eq.${uid},user2.eq.${uid}`);
     if (!q1.error && (q1.count ?? 0) > 0) return true;
 
-    // Essai 2: colonnes user1_id/user2_id (fallback)
+    // Essai 2: colonnes user1_id/user2_id (fallback colonne)
     const q2 = await supabase
       .from("matches")
       .select("id", { count: "exact", head: true })
@@ -103,7 +66,7 @@ export default function Discover() {
     return false;
   }
 
-  // 🔹 Chargement des profils proches (ou redirection si match actif)
+  // 🔹 Chargement (ou redirection si match actif)
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -117,7 +80,7 @@ export default function Discover() {
         return;
       }
 
-      // ✅ Strict gate: empêche l’accès à Discover si match actif
+      // ✅ Strict gate
       const active = await hasActiveMatch(userId);
       if (active) {
         setItems([]);
@@ -126,37 +89,17 @@ export default function Discover() {
         return;
       }
 
-      // 1) Lecture de MES coord et rayon
+      // Récupère juste la photo (affichage header)
       const { data: me, error: meErr } = await supabase
         .from("profiles")
-        .select("photo_url, lat, lng, city_lat, city_lng, preferred_distance_km")
+        .select("photo_url")
         .eq("id", userId)
         .maybeSingle();
       if (meErr) console.warn("[discover] profiles(me) error:", meErr);
-
       if (me?.photo_url) setUserPhoto(me.photo_url || "");
 
-      // radius : profile_preferences.distance_km > profiles.preferred_distance_km > 50
-      const { data: pref, error: prefErr } = await supabase
-        .from("profile_preferences")
-        .select("distance_km")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (prefErr) console.warn("[discover] preferences error:", prefErr);
-
-      const myLat = (me as any)?.lat ?? (me as any)?.city_lat ?? null;
-      const myLon = (me as any)?.lng ?? (me as any)?.city_lng ?? null;
-      const radius =
-        (pref as any)?.distance_km ?? (me as any)?.preferred_distance_km ?? 50;
-
-      if (myLat == null || myLon == null) {
-        setItems([]);
-        setLoading(false);
-        return;
-      }
-
-      // 2) Appel unique : tout est géré en SQL (distance, âge, genres, exclusions, invisibilité des utilisateurs déjà en match actif)
-      let mapped: CardProfile[] | null = null;
+      // 100% via RPC : distance, âge, genres, exclusions, invisibilité des actifs
+      let mapped: CardProfile[] = [];
 
       try {
         const { data, error } = await supabase.rpc("get_discover_candidates", {
@@ -166,6 +109,7 @@ export default function Discover() {
 
         if (error) {
           console.error("[discover] get_discover_candidates error:", error);
+          mapped = []; // pas de fallback JS
         } else if (Array.isArray(data)) {
           mapped = data.map((r: any) => ({
             id: r.id,
@@ -177,55 +121,15 @@ export default function Discover() {
             photoUrl: r.photo_url ?? null,
             distance_km: r.distance_km ?? null,
           }));
+        } else {
+          mapped = [];
         }
       } catch (e) {
         console.error("[discover] get_discover_candidates threw:", e);
+        mapped = [];
       }
 
-      // Si aucun résultat (ou erreur), on tente un fallback distance-only
-      if (!mapped) {
-        const { data: raw, error: selErr } = await supabase
-          .from("profiles")
-          .select(
-            "id, first_name, birthdate, city, bio, interests, photo_url, lat, lng, city_lat, city_lng"
-          )
-          .neq("id", userId) // pas moi
-          .not("photo_url", "is", null) // un minimum pour la carte
-          .limit(200);
-
-        if (selErr || !raw) {
-          if (selErr) console.error("[discover] profiles list error:", selErr);
-          setItems([]);
-          setLoading(false);
-          return;
-        }
-
-        const filtered = (raw as RawProfile[])
-          .map((p) => {
-            const plat = p.lat ?? p.city_lat ?? null;
-            const plon = p.lng ?? p.city_lng ?? null;
-            if (plat == null || plon == null) return null;
-            const d = haversineKm(myLat, myLon, plat, plon);
-            return { p, d };
-          })
-          .filter(Boolean)
-          .filter((x) => (x as any).d <= radius)
-          .sort((a: any, b: any) => a.d - b.d)
-          .slice(0, 30);
-
-        mapped = filtered.map(({ p, d }: any) => ({
-          id: p.id,
-          name: p.first_name ?? "—",
-          age: ageFromBirthdate(p.birthdate),
-          city: p.city ?? "—",
-          bio: p.bio ?? "",
-          interests: p.interests ?? [],
-          photoUrl: p.photo_url ?? null,
-          distance_km: d,
-        }));
-      }
-
-      setItems(mapped ?? []);
+      setItems(mapped);
       setLoading(false);
     })();
   }, [navigate]);
@@ -270,7 +174,6 @@ export default function Discover() {
 
     let matchId: string | null = null;
 
-    // ⬇️ IMPORTANT : 2 paramètres pour lever l’ambiguïté (PGRST203)
     const { data: lpData, error: lpError } = await supabase.rpc("like_profile", {
       p_actor_id: userId,
       p_target_id: profile.id,
@@ -280,7 +183,6 @@ export default function Discover() {
       console.error("[discover] like_profile error:", lpError);
     } else {
       console.log("[discover] like_profile ok:", lpData);
-      // Tolérant sur le format de retour : {match_id} | [{match_id}] | null
       const raw: any = lpData;
       if (Array.isArray(raw) && raw.length > 0) {
         matchId = raw[0]?.match_id ?? null;
@@ -292,7 +194,6 @@ export default function Discover() {
     }
 
     if (matchId) {
-      // Récupère prénoms + âges pour l’écran Match
       const { data: profs, error: pErr } = await supabase
         .from("profiles")
         .select("id, first_name, birthdate")
@@ -323,7 +224,6 @@ export default function Discover() {
         },
       });
     } else {
-      // pas encore réciproque → on retire la carte et on continue
       setItems((prev) => prev.filter((p) => p.id !== profile.id));
       setShowInfo(false);
     }
@@ -585,5 +485,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
   },
 };
+
 
 
