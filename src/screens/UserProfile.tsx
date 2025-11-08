@@ -483,11 +483,7 @@ export default function UserProfileScreen() {
                 </button>
               </div>
 
-              {/* Lecture rapide des coords actuelles */}
-              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
-                <div>Ville: <code>{row?.city || "—"}</code> • city_lat/lng: <code>{row?.city_lat ?? "—"}</code> / <code>{row?.city_lng ?? "—"}</code></div>
-                <div>GPS: <code>{row?.lat ?? "—"}</code> / <code>{row?.lng ?? "—"}</code></div>
-              </div>
+              
             </div>
           </div>
         </section>
